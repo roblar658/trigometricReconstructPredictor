@@ -8,7 +8,10 @@ use comfy_table::{Cell, Color, Table};
 /// Skriver ut en tabell over amplitude-klassifisering
 pub fn print_classification_table(summary: &ClassificationSummary, func: &SineFunction) {
     println!("\n{}", "=========================================================================".bright_cyan());
-    println!("  {} {}", "GPU AMPLITUDE-KLASSIFISERING FOR:".bold().white(), func.to_string().bright_yellow().bold());
+    println!("  {}", "GPU AMPLITUDE-KLASSIFISERING FOR:".bold().white());
+    for line in func.format_multiline(4).lines() {
+        println!("    {}", line.bright_yellow().bold());
+    }
     println!("{}\n", "=========================================================================".bright_cyan());
 
     // 1. Sammendragstabell

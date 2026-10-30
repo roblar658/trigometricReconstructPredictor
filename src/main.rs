@@ -648,7 +648,10 @@ async fn run_full_demonstration() {
     let formula = "sin(x) + cos(2x) + sin(9x)";
     let func = SineFunction::parse(formula).expect("Kunne ikke parse formel");
     println!("\n{}", "--- DEL 1: GPU-KLASSIFISERING FOR BLANDET SIN/COS FUNKSJON ---".yellow().bold());
-    println!("Innskrevet funksjon: {}", func.to_string().cyan().bold());
+    println!("Innskrevet funksjon (maks 4 ledd/linje):");
+    for line in func.format_multiline(4).lines() {
+        println!("  {}", line.cyan().bold());
+    }
 
     let pipeline = gpu::pipeline::ExtremaClassifierPipeline::new(&ctx);
     match pipeline.run(

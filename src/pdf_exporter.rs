@@ -259,28 +259,31 @@ fn generate_html_report(
         let mut cand_rows = String::new();
         for (rank, cand) in res.top_candidates.iter().enumerate() {
             let row_class = if rank == 0 { "font-weight: bold; background-color: #f0fdf4;" } else { "" };
+            let formatted_cand = html_escape(&cand.function.format_multiline(4)).replace('\n', "<br/>");
             cand_rows.push_str(&format!(
                 r#"<tr style="{}">
                     <td style="text-align:center;">#{}</td>
-                    <td>{}</td>
+                    <td><div style="font-family: monospace; white-space: pre-wrap;">{}</div></td>
                     <td style="text-align:right;">{:.4}%</td>
                     <td style="text-align:right;">{:.5}</td>
                     <td style="text-align:right;">{:.5}</td>
                 </tr>"#,
                 row_class,
                 rank + 1,
-                cand.function,
+                formatted_cand,
                 cand.r_squared * 100.0,
                 cand.rmse,
                 cand.max_error
             ));
         }
 
+        let formatted_best = html_escape(&best.function.format_multiline(4)).replace('\n', "<br/>");
+
         format!(
             r#"<section class="card">
                 <h2>1. CSV-Data Identifisering</h2>
                 <div class="metrics-grid">
-                    <div class="metric"><span class="label">Beste tilpasning</span><span class="value val-blue">{}</span></div>
+                    <div class="metric"><span class="label">Beste tilpasning</span><span class="value val-blue" style="font-size: 13px; font-family: monospace; white-space: pre-wrap;">{}</span></div>
                     <div class="metric"><span class="label">Identifiserte frekvenser</span><span class="value">[{}]</span></div>
                     <div class="metric"><span class="label">Forklaringsgrad (R²)</span><span class="value val-green">{:.5} ({:.2}%)</span></div>
                     <div class="metric"><span class="label">Avvik (RMSE)</span><span class="value">{:.6}</span></div>
@@ -292,7 +295,7 @@ fn generate_html_report(
                     <thead>
                         <tr>
                             <th>Rang</th>
-                            <th>Kandidatfunksjon</th>
+                            <th>Kandidatfunksjon (maks 4 ledd/linje)</th>
                             <th>R² Fit</th>
                             <th>RMSE</th>
                             <th>Maks Feil</th>
@@ -303,7 +306,7 @@ fn generate_html_report(
                     </tbody>
                 </table>
             </section>"#,
-            best.function,
+            formatted_best,
             freqs.join(", "),
             best.r_squared,
             best.r_squared * 100.0,
@@ -472,6 +475,8 @@ fn generate_html_report(
         String::new()
     };
 
+    let formatted_func = html_escape(&func.format_multiline(4)).replace('\n', "<br/>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;");
+
     format!(
         r#"<!DOCTYPE html>
 <html lang="no">
@@ -619,7 +624,7 @@ fn generate_html_report(
 <body>
     <div class="header">
         <h1>{title}</h1>
-        <div class="subtitle">Funksjon: <b>{func}</b></div>
+        <div class="subtitle">Funksjon: <b style="font-family: monospace;">{func}</b></div>
         <div class="meta-tags">
             <div><b>GPU:</b> {gpu_name} ({gpu_backend})</div>
             <div><b>Dato:</b> {now}</div>
@@ -727,7 +732,7 @@ fn generate_html_report(
 </body>
 </html>"#,
         title = title,
-        func = func,
+        func = formatted_func,
         gpu_name = gpu_info.0,
         gpu_backend = gpu_info.1,
         now = now,
