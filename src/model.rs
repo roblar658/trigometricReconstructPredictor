@@ -588,13 +588,27 @@ impl TrigFunction {
                     let is_neg = target_amp < 0.0;
                     let abs_amp = target_amp.abs();
 
-                    let fn_part = if (abs_amp - 1.0).abs() < 1e-4 {
-                        format!("{}(x)", kind_str)
-                    } else if (abs_amp - abs_amp.round()).abs() < 1e-4 {
-                        format!("{}*{}(x)", abs_amp.round() as i64, kind_str)
-                    } else {
-                        format!("{:.2}*{}(x)", abs_amp, kind_str)
+                    let format_amp = |a: f64| -> String {
+                        if (a - 1.0).abs() < 1e-4 {
+                            String::new()
+                        } else if (a - a.round()).abs() < 1e-4 {
+                            format!("{}*", a.round() as i64)
+                        } else if a >= 0.095 {
+                            let s = format!("{:.2}", a);
+                            let t = s.trim_end_matches('0').trim_end_matches('.');
+                            format!("{}*", t)
+                        } else if a >= 0.00095 {
+                            let s = format!("{:.4}", a);
+                            let t = s.trim_end_matches('0').trim_end_matches('.');
+                            format!("{}*", t)
+                        } else {
+                            let s = format!("{:.6}", a);
+                            let t = s.trim_end_matches('0').trim_end_matches('.');
+                            format!("{}*", t)
+                        }
                     };
+
+                    let fn_part = format!("{}{}(x)", format_amp(abs_amp), kind_str);
 
                     segments.push(FormattedSegment {
                         text: format!("[[{}, {}, {}]]", start_f, fn_part, end_f),
@@ -611,13 +625,27 @@ impl TrigFunction {
                         format!("{}({}x)", kind_str, t.freq)
                     };
 
-                    let txt = if (abs_amp - 1.0).abs() < 1e-4 {
-                        fn_part
-                    } else if (abs_amp - abs_amp.round()).abs() < 1e-4 {
-                        format!("{}*{}", abs_amp.round() as i64, fn_part)
-                    } else {
-                        format!("{:.2}*{}", abs_amp, fn_part)
+                    let format_amp = |a: f64| -> String {
+                        if (a - 1.0).abs() < 1e-4 {
+                            String::new()
+                        } else if (a - a.round()).abs() < 1e-4 {
+                            format!("{}*", a.round() as i64)
+                        } else if a >= 0.095 {
+                            let s = format!("{:.2}", a);
+                            let t = s.trim_end_matches('0').trim_end_matches('.');
+                            format!("{}*", t)
+                        } else if a >= 0.00095 {
+                            let s = format!("{:.4}", a);
+                            let t = s.trim_end_matches('0').trim_end_matches('.');
+                            format!("{}*", t)
+                        } else {
+                            let s = format!("{:.6}", a);
+                            let t = s.trim_end_matches('0').trim_end_matches('.');
+                            format!("{}*", t)
+                        }
                     };
+
+                    let txt = format!("{}{}", format_amp(abs_amp), fn_part);
 
                     segments.push(FormattedSegment {
                         text: txt,

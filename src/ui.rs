@@ -6,7 +6,7 @@ use crate::model::TrigFunction;
 use crate::patterns::{self, ExtremaPatternReport};
 use crate::pdf_exporter;
 use eframe::egui::{self, Color32, RichText, Stroke};
-use egui_plot::{Line, MarkerShape, Plot, Points};
+use egui_plot::{Line, MarkerShape, Plot, Points, PlotPoints, Polygon, VLine};
 use std::f64::consts::TAU;
 use std::fs::File;
 use std::io::Write;
@@ -110,6 +110,11 @@ pub struct ExtremaApp {
     pub flac_meta: Option<crate::flac_loader::FlacMetadata>,
     pub flac_options: crate::flac_loader::FlacExtractionOptions,
 
+    // Sub-område markering (minX til maxX) med gul farge
+    pub sub_range_enabled: bool,
+    pub sub_range_min_x: f64,
+    pub sub_range_max_x: f64,
+
     // Syntetisk datasett-generering for CSV
     pub gen_formula: String,
     pub gen_points: usize,
@@ -172,6 +177,10 @@ impl Default for ExtremaApp {
             csv_error: None,
             flac_meta: None,
             flac_options: crate::flac_loader::FlacExtractionOptions::default(),
+
+            sub_range_enabled: false,
+            sub_range_min_x: 0.0,
+            sub_range_max_x: 2.0 * std::f64::consts::PI,
 
             gen_formula: "sin(x) + cos(2x)".to_string(),
             gen_points: 2000,
@@ -462,6 +471,13 @@ impl ExtremaApp {
                 .unwrap_or(false);
 
             if is_flac {
+                if self.flac_options.start_seconds == 0.0 {
+                    if let Some(act) = crate::flac_loader::find_first_active_second(&path, 0.025) {
+                        if act > 0.15 {
+                            self.flac_options.start_seconds = (act * 100.0).floor() / 100.0;
+                        }
+                    }
+                }
                 match crate::flac_loader::read_flac_data(&path, &self.flac_options) {
                     Ok((meta, pts)) => {
                         let hz_info = if self.flac_options.time_as_hz_radians {
@@ -478,9 +494,26 @@ impl ExtremaApp {
                             path.file_name().unwrap_or_default().to_string_lossy(),
                             hz_info
                         ));
+                        let full_min_x = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+                        let full_max_x = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+                        if full_max_x > full_min_x {
+                            self.sub_range_min_x = full_min_x;
+                            self.sub_range_max_x = full_max_x;
+                            self.sub_range_enabled = false;
+                        }
                         self.csv_file_path = Some(path);
+                        let full_min_x = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+                        let full_max_x = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+                        if full_max_x > full_min_x {
+                            self.sub_range_min_x = full_min_x;
+                            self.sub_range_max_x = full_max_x;
+                            self.sub_range_enabled = false;
+                        }
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
+                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 2000 {
+                            self.csv_max_n = 2000;
+                        }
                         self.analyze_loaded_csv();
                     }
                     Err(e) => {
@@ -495,6 +528,13 @@ impl ExtremaApp {
                             data.len(),
                             path.file_name().unwrap_or_default().to_string_lossy()
                         ));
+                        let full_min_x = data.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
+                        let full_max_x = data.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
+                        if full_max_x > full_min_x {
+                            self.sub_range_min_x = full_min_x;
+                            self.sub_range_max_x = full_max_x;
+                            self.sub_range_enabled = false;
+                        }
                         self.csv_file_path = Some(path);
                         self.flac_meta = None;
                         self.csv_data = data;
@@ -516,6 +556,9 @@ impl ExtremaApp {
                     Ok((meta, pts)) => {
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
+                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 2000 {
+                            self.csv_max_n = 2000;
+                        }
                         self.analyze_loaded_csv();
                     }
                     Err(e) => {
@@ -589,17 +632,102 @@ impl ExtremaApp {
             return;
         }
 
-        match csv_analyzer::identify_function_from_data(&self.csv_data, self.csv_max_n) {
+        let (points_to_analyze, is_sub) = if self.sub_range_enabled && self.sub_range_max_x > self.sub_range_min_x {
+            let filtered: Vec<DataPoint> = self.csv_data
+                .iter()
+                .filter(|p| p.x >= self.sub_range_min_x && p.x <= self.sub_range_max_x)
+                .cloned()
+                .collect();
+            (filtered, true)
+        } else {
+            (self.csv_data.clone(), false)
+        };
+
+        if points_to_analyze.is_empty() {
+            self.csv_error = Some("Ingen datapunkter i det valgte sub-området [minX, maxX]".to_string());
+            return;
+        }
+
+        if points_to_analyze.len() < 5 {
+            self.csv_error = Some(format!("For få datapunkter i sub-området ({} stk, krever minst 5)", points_to_analyze.len()));
+            return;
+        }
+
+        match csv_analyzer::identify_function_from_data(&points_to_analyze, self.csv_max_n) {
             Ok(res) => {
-                self.csv_status = Some(format!(
-                    "Identifiserte funksjon med R² = {:.4} ({:.1}%)",
-                    res.best_match.r_squared,
-                    res.best_match.r_squared * 100.0
-                ));
+                if is_sub {
+                    self.csv_status = Some(format!(
+                        "Sub-område x ∈ [{:.3}, {:.3}]: Identifiserte funksjon med R² = {:.4} ({:.1}%, {} av {} pkt)",
+                        self.sub_range_min_x,
+                        self.sub_range_max_x,
+                        res.best_match.r_squared,
+                        res.best_match.r_squared * 100.0,
+                        points_to_analyze.len(),
+                        self.csv_data.len()
+                    ));
+                } else {
+                    self.csv_status = Some(format!(
+                        "Identifiserte funksjon med R² = {:.4} ({:.1}%)",
+                        res.best_match.r_squared,
+                        res.best_match.r_squared * 100.0
+                    ));
+                }
                 self.csv_result = Some(res);
             }
             Err(e) => {
                 self.csv_error = Some(format!("Analyse feilet: {}", e));
+            }
+        }
+    }
+
+    /// Eksporterer kun datapunktene i det markerte sub-området til en ny CSV-fil
+    pub fn export_sub_range_to_csv(&mut self) {
+        if self.csv_data.is_empty() {
+            return;
+        }
+        let sub_pts: Vec<DataPoint> = if self.sub_range_enabled && self.sub_range_max_x > self.sub_range_min_x {
+            self.csv_data.iter().filter(|p| p.x >= self.sub_range_min_x && p.x <= self.sub_range_max_x).cloned().collect()
+        } else {
+            self.csv_data.clone()
+        };
+
+        if let Some(target_path) = rfd::FileDialog::new()
+            .set_file_name("sub_omraade.csv")
+            .add_filter("CSV-data (*.csv)", &["csv"])
+            .save_file()
+        {
+            let res = if let Some(meta) = &self.flac_meta {
+                crate::flac_loader::export_flac_to_csv(
+                    &sub_pts,
+                    &target_path,
+                    meta.sample_rate,
+                    self.flac_options.time_as_hz_radians,
+                )
+            } else {
+                let mut f = match File::create(&target_path) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        self.csv_error = Some(format!("Kunne ikke opprette fil: {}", e));
+                        return;
+                    }
+                };
+                let mut ok = writeln!(f, "x,y").is_ok();
+                for p in &sub_pts {
+                    if writeln!(f, "{:.8},{:.8}", p.x, p.y).is_err() {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok { Ok(()) } else { Err("Feil under skriving av CSV".to_string()) }
+            };
+
+            match res {
+                Ok(()) => {
+                    self.csv_status = Some(format!("Eksporterte {} sub-datapunkter til: {}", sub_pts.len(), target_path.display()));
+                }
+                Err(e) => {
+                    self.csv_error = Some(format!("Eksport feilet: {}", e));
+                }
             }
         }
     }
@@ -987,13 +1115,28 @@ impl ExtremaApp {
                             .on_hover_text("Når aktivert, tilsvarer funksjonens frekvens k tonehøyden i Hertz direkte")
                             .changed();
 
+                        ui.label(RichText::new("Start (sek):").size(11.5));
+                        let changed_start = ui
+                            .add(egui::DragValue::new(&mut self.flac_options.start_seconds).range(0.0..=meta.duration_seconds).speed(0.05).max_decimals(2))
+                            .on_hover_text("Starttidspunkt i sekunder i lydfilen")
+                            .changed();
+
+                        if ui.button("⚡ Hopp til aktiv lyd").on_hover_text("Søk fram til første aktive lydsegment (hopper over innledende stillhet)").clicked() {
+                            if let Some(ref path) = self.csv_file_path {
+                                if let Some(act_sec) = crate::flac_loader::find_first_active_second(path, 0.025) {
+                                    self.flac_options.start_seconds = (act_sec * 100.0).floor() / 100.0;
+                                    need_reload_flac = true;
+                                }
+                            }
+                        }
+
                         ui.label(RichText::new("Maks FLAC-pkt:").size(11.5));
                         let changed_pts = ui
                             .add(egui::DragValue::new(&mut self.flac_options.max_points).range(200..=50_000).speed(100.0))
                             .on_hover_text("Antall prøvepunkter som leses ut fra FLAC-lydfilen")
                             .changed();
 
-                        if changed_hz || changed_pts {
+                        if changed_hz || changed_start || changed_pts {
                             need_reload_flac = true;
                         }
                     });
@@ -1014,8 +1157,10 @@ impl ExtremaApp {
         ui.add_space(3.0);
 
         let mut transfer_to_classifier = None;
+        let mut need_reanalyze = false;
+        let mut need_export_sub = false;
 
-        if let Some(res) = &self.csv_result {
+        if let Some(res) = self.csv_result.clone() {
             egui::Frame::new()
                 .fill(theme.bg_card)
                 .stroke(theme.border_accent)
@@ -1055,36 +1200,193 @@ impl ExtremaApp {
 
             ui.add_space(3.0);
 
+            // --- SUB-OMRÅDE MARKERINGSKONTROLLER (GUL FARGE minX TIL maxX) ---
+            let full_min_x = self.csv_data.iter().map(|p| p.x).fold(0.0f64, f64::min);
+            let full_max_x = self.csv_data.iter().map(|p| p.x).fold(1.0f64, f64::max);
+            let x_span = (full_max_x - full_min_x).max(1e-4);
+            let speed = x_span / 200.0;
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("📐 Sub-område:").strong().size(12.5).color(theme.text_secondary));
+
+                let _ = ui
+                    .checkbox(&mut self.sub_range_enabled, RichText::new("Aktiver sub-område").strong().color(Color32::from_rgb(255, 215, 0)))
+                    .on_hover_text("Når aktivert, beregnes og finnes formelen KUN for det markerte området mellom minX og maxX");
+
+                ui.separator();
+                ui.label(RichText::new("minX:").size(11.5).strong().color(Color32::from_rgb(255, 215, 0)));
+                let changed_min = ui
+                    .add(egui::DragValue::new(&mut self.sub_range_min_x).range(full_min_x..=self.sub_range_max_x).speed(speed).max_decimals(4))
+                    .on_hover_text("Startverdi for sub-område (kan også settes ved venstreklikk i grafen)")
+                    .changed();
+
+                ui.label(RichText::new("maxX:").size(11.5).strong().color(Color32::from_rgb(255, 215, 0)));
+                let changed_max = ui
+                    .add(egui::DragValue::new(&mut self.sub_range_max_x).range(self.sub_range_min_x..=full_max_x).speed(speed).max_decimals(4))
+                    .on_hover_text("Sluttverdi for sub-område (kan også settes ved høyreklikk i grafen)")
+                    .changed();
+
+                if let Some(ref _meta) = self.flac_meta {
+                    let t_min = if self.flac_options.time_as_hz_radians { self.sub_range_min_x / TAU } else { self.sub_range_min_x };
+                    let t_max = if self.flac_options.time_as_hz_radians { self.sub_range_max_x / TAU } else { self.sub_range_max_x };
+                    ui.label(RichText::new(format!("(tid: {:.3}s - {:.3}s)", t_min, t_max)).size(11.0).color(theme.text_secondary));
+                }
+
+                if changed_min || changed_max {
+                    self.sub_range_enabled = true;
+                }
+
+                if ui
+                    .button(RichText::new("⚡ Finn funksjon for sub-område").strong().color(Color32::from_rgb(255, 215, 0)))
+                    .on_hover_text("Kjør Fourier- og OMP-analyse utelukkende på det markerte gule sub-området")
+                    .clicked()
+                {
+                    self.sub_range_enabled = true;
+                    need_reanalyze = true;
+                }
+
+                if ui
+                    .button("↺ Hele datasettet")
+                    .on_hover_text("Nullstill sub-område og analyser hele det innlastede datasettet på nytt")
+                    .clicked()
+                {
+                    self.sub_range_min_x = full_min_x;
+                    self.sub_range_max_x = full_max_x;
+                    self.sub_range_enabled = false;
+                    need_reanalyze = true;
+                }
+
+                if ui
+                    .button("💾 Lagre sub-område...")
+                    .on_hover_text("Eksporter kun punktene i det markerte sub-området til en ny CSV-fil")
+                    .clicked()
+                {
+                    need_export_sub = true;
+                }
+            });
+
+            ui.label(
+                RichText::new("💡 Tips: Du kan markere direkte i grafen: Venstreklikk = minX, Høyreklikk = maxX. Markert område lyser opp i gul farge.")
+                    .size(10.5)
+                    .color(theme.text_secondary)
+            );
+
+            ui.add_space(2.0);
+
+            let sub_min = if self.sub_range_enabled { self.sub_range_min_x } else { full_min_x };
+            let sub_max = if self.sub_range_enabled { self.sub_range_max_x } else { full_max_x };
+
+            let y_min = self.csv_data.iter().map(|p| p.y).fold(0.0f64, f64::min);
+            let y_max = self.csv_data.iter().map(|p| p.y).fold(0.0f64, f64::max);
+            let y_pad = (y_max - y_min).abs().max(0.1) * 3.0;
+            let y_bot = y_min - y_pad;
+            let y_top = y_max + y_pad;
+
+            let yellow_fill = Color32::from_rgba_unmultiplied(255, 235, 59, 45); // myk lysende gul bakgrunn
+            let yellow_solid = Color32::from_rgb(255, 215, 0); // gull/gul
+
             // Kompakt plot som passer uten scrolling
-            Plot::new("csv_fit_plot")
+            let plot_resp = Plot::new("csv_fit_plot")
                 .height(230.0)
                 .show_grid(true)
                 .allow_scroll(false)
                 .x_axis_label("x")
                 .y_axis_label("y")
                 .show(ui, |plot_ui| {
-                    let pts: Vec<[f64; 2]> = self.csv_data.iter().map(|p| [p.x, p.y]).collect();
+                    // GUL BAKGRUNNSMARKERING MELLOM minX OG maxX
+                    if self.sub_range_enabled || sub_max > sub_min {
+                        let poly = Polygon::new(
+                            "Markert sub-område (gul)",
+                            PlotPoints::new(vec![
+                                [sub_min, y_bot],
+                                [sub_max, y_bot],
+                                [sub_max, y_top],
+                                [sub_min, y_top],
+                            ]),
+                        )
+                        .fill_color(yellow_fill)
+                        .stroke(Stroke::new(1.0, yellow_solid));
+
+                        plot_ui.polygon(poly);
+
+                        // Gule vertikale avgrensningslinjer
+                        plot_ui.vline(VLine::new("minX", sub_min).color(yellow_solid).width(2.0));
+                        plot_ui.vline(VLine::new("maxX", sub_max).color(yellow_solid).width(2.0));
+                    }
+
+                    // Del opp punkter: Innenfor (gul) og utenfor (dempet grå)
+                    let mut pts_inside = Vec::new();
+                    let mut pts_outside = Vec::new();
+                    for p in &self.csv_data {
+                        if self.sub_range_enabled && (p.x < sub_min || p.x > sub_max) {
+                            pts_outside.push([p.x, p.y]);
+                        } else {
+                            pts_inside.push([p.x, p.y]);
+                        }
+                    }
+
+                    if !pts_outside.is_empty() {
+                        plot_ui.points(
+                            Points::new("Utenfor sub-område", pts_outside)
+                                .color(Color32::from_gray(100))
+                                .radius(2.0),
+                        );
+                    }
+
+                    let inside_color = if self.sub_range_enabled { yellow_solid } else { theme.text_secondary };
                     plot_ui.points(
-                        Points::new("CSV Datapunkter", pts)
-                            .color(theme.text_secondary)
-                            .radius(2.5),
+                        Points::new("Markert sub-område", pts_inside)
+                            .color(inside_color)
+                            .radius(2.8),
                     );
 
                     let func = &res.best_match.function;
                     let num_curve_pts = 600;
                     let mut curve = Vec::with_capacity(num_curve_pts);
-                    let (x_start, x_end) = res.x_range;
-                    let span = if x_end > x_start { x_end - x_start } else { TAU };
+                    let (curve_start, curve_end) = if self.sub_range_enabled && sub_max > sub_min {
+                        (sub_min, sub_max)
+                    } else {
+                        res.x_range
+                    };
+                    let span = if curve_end > curve_start { curve_end - curve_start } else { TAU };
                     for i in 0..num_curve_pts {
-                        let x = x_start + (i as f64 / (num_curve_pts - 1) as f64) * span;
+                        let x = curve_start + (i as f64 / (num_curve_pts - 1) as f64) * span;
                         curve.push([x, func.eval(x)]);
                     }
                     plot_ui.line(
                         Line::new("Tilpasset modell", curve)
                             .color(theme.text_success)
-                            .width(2.0),
+                            .width(2.5),
                     );
                 });
+
+            // Håndter klikk på grafen for å sette minX og maxX interaktivt
+            if plot_resp.response.clicked() {
+                if let Some(pos) = plot_resp.response.interact_pointer_pos() {
+                    let plot_pt = plot_resp.transform.value_from_position(pos);
+                    let x_clamped = plot_pt.x.clamp(full_min_x, full_max_x);
+                    if x_clamped < self.sub_range_max_x {
+                        self.sub_range_min_x = x_clamped;
+                    } else {
+                        self.sub_range_min_x = x_clamped;
+                        self.sub_range_max_x = full_max_x;
+                    }
+                    self.sub_range_enabled = true;
+                }
+            }
+            if plot_resp.response.secondary_clicked() {
+                if let Some(pos) = plot_resp.response.interact_pointer_pos() {
+                    let plot_pt = plot_resp.transform.value_from_position(pos);
+                    let x_clamped = plot_pt.x.clamp(full_min_x, full_max_x);
+                    if x_clamped > self.sub_range_min_x {
+                        self.sub_range_max_x = x_clamped;
+                    } else {
+                        self.sub_range_max_x = x_clamped;
+                        self.sub_range_min_x = full_min_x;
+                    }
+                    self.sub_range_enabled = true;
+                }
+            }
 
             ui.add_space(3.0);
 
@@ -1156,6 +1458,13 @@ impl ExtremaApp {
                                 });
                         });
                 });
+        }
+
+        if need_reanalyze {
+            self.analyze_loaded_csv();
+        }
+        if need_export_sub {
+            self.export_sub_range_to_csv();
         }
 
         if let Some(formula) = transfer_to_classifier {

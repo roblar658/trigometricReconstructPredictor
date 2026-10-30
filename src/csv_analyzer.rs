@@ -191,6 +191,22 @@ pub fn parse_csv_string(content: &str) -> Result<Vec<DataPoint>, Box<dyn Error>>
 }
 
 fn snap_amplitude(amp: f64) -> f64 {
+    if amp.abs() < 1e-9 {
+        return 0.0;
+    }
+    // For små amplituder (f.eks. lydsignaler med amp < 0.35), ikke avrund til 0!
+    if amp.abs() < 0.35 {
+        let r_tenth = (amp * 10.0).round() / 10.0;
+        if (amp - r_tenth).abs() < 0.015 && r_tenth.abs() > 1e-6 {
+            return r_tenth;
+        }
+        let r_hundredth = (amp * 100.0).round() / 100.0;
+        if (amp - r_hundredth).abs() < 0.005 && r_hundredth.abs() > 1e-6 {
+            return r_hundredth;
+        }
+        return (amp * 10_000.0).round() / 10_000.0;
+    }
+
     let r_int = amp.round();
     if (amp - r_int).abs() < 0.12 {
         return r_int;
@@ -378,9 +394,19 @@ pub fn identify_function_from_data(
     let mut residual = y_vec.clone();
     let mut selected_terms: Vec<(TrigKind, u32)> = Vec::new();
     let mut selected_cols: Vec<Vec<f64>> = Vec::new();
-    let max_omp_steps = 20.min(n / 3);
+    let max_omp_steps = 25.min(n / 3);
 
     for _step in 0..max_omp_steps {
+        // Beregn residualets vektede norm for skalerings-uavhengig Pearson-korrelasjon
+        let mut r_norm_sq = 0.0;
+        for (&r, &w) in residual.iter().zip(&weights) {
+            r_norm_sq += w * r * r;
+        }
+        let r_norm = r_norm_sq.sqrt();
+        if r_norm < 1e-7 {
+            break;
+        }
+
         let mut best_score = -1.0;
         let mut best_term = (TrigKind::Sin, 1);
 
@@ -403,7 +429,7 @@ pub fn identify_function_from_data(
                 }
 
                 let norm = norm_sq.sqrt();
-                let score = if norm > 1e-9 { dot.abs() / norm } else { 0.0 };
+                let score = if norm > 1e-9 { dot.abs() / (r_norm * norm) } else { 0.0 };
                 if score > best_score {
                     best_score = score;
                     best_term = (kind, k);
@@ -411,8 +437,8 @@ pub fn identify_function_from_data(
             }
         }
 
-        // Hvis ingen korrelasjon av betydning gjenstår i residualet, stopp
-        if best_score < 0.04 {
+        // Stopp kun dersom korrelasjonen er neglisjerbar (< 1% korrelert med feilen)
+        if best_score < 0.01 {
             break;
         }
 
@@ -448,7 +474,7 @@ pub fn identify_function_from_data(
                 .zip(&coeffs)
                 .filter_map(|(&(kind, freq), &c)| {
                     let s = snap_amplitude(c);
-                    if s.abs() > 1e-4 {
+                    if s.abs() > 1e-6 {
                         Some(TrigTerm::new(kind, freq, s))
                     } else {
                         None
@@ -459,13 +485,13 @@ pub fn identify_function_from_data(
                 candidate_functions.push(TrigFunction::new(snapped_terms));
             }
 
-            // Kandidat 2: Nøyaktige tilpassede regresjonskoeffisienter
+            // Kandidat 2: Nøyaktige tilpassede regresjonskoeffisienter (bevarer mikro-amplituder)
             let fitted_terms: Vec<TrigTerm> = selected_terms
                 .iter()
                 .zip(&coeffs)
                 .filter_map(|(&(kind, freq), &c)| {
-                    let rounded = (c * 1000.0).round() / 1000.0;
-                    if rounded.abs() > 1e-4 {
+                    let rounded = (c * 10_000.0).round() / 10_000.0;
+                    if rounded.abs() > 1e-6 {
                         Some(TrigTerm::new(kind, freq, rounded))
                     } else {
                         None
@@ -524,21 +550,43 @@ pub fn identify_function_from_data(
         harmonic_spectrum.push((TrigKind::Cos, k, amp_cos));
     }
 
+    // Adaptiv terskel basert på maksimal frekvenskomponent i spekteret (skalerer riktig selv for 100 ledd og små amplituder)
+    let max_harmonic_amp = harmonic_spectrum.iter().map(|(_, _, a)| a.abs()).fold(0.0f64, f64::max);
+    let fourier_threshold = (max_harmonic_amp * 0.08).min(0.15).max(1e-5);
+
     let mut significant_components: Vec<(TrigKind, u32, f64)> = harmonic_spectrum
         .iter()
-        .filter(|(_, _, amp)| amp.abs() >= 0.15)
+        .filter(|(_, _, amp)| amp.abs() >= fourier_threshold)
         .copied()
         .collect();
 
     significant_components.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
 
+    // Hvis ingen nådde 5% terskelen, ta alltid med de sterkeste spektraltoppene
+    if significant_components.is_empty() {
+        let mut sorted_spec = harmonic_spectrum.clone();
+        sorted_spec.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
+        for item in sorted_spec.into_iter().take(5) {
+            if item.2.abs() > 1e-8 {
+                significant_components.push(item);
+            }
+        }
+    }
+
     if !significant_components.is_empty() {
-        // Alle signifikante ledd (essensielt for intervalluttrykk som [[4, 3cos(x), 100]])
+        // Enkelttopp-kandidat fra det sterkeste leddet
+        let top_term = TrigTerm::new(significant_components[0].0, significant_components[0].1, significant_components[0].2);
+        candidate_functions.push(TrigFunction::new(vec![top_term]));
+
+        // Alle signifikante ledd
         let fourier_all: Vec<TrigTerm> = significant_components
             .iter()
             .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
+            .filter(|t| t.amp.abs() > 1e-6)
             .collect();
-        candidate_functions.push(TrigFunction::new(fourier_all));
+        if !fourier_all.is_empty() {
+            candidate_functions.push(TrigFunction::new(fourier_all));
+        }
 
         // Subsett 1..=5
         let top_n = significant_components.len().min(5);
@@ -546,8 +594,11 @@ pub fn identify_function_from_data(
             let subset_fitted: Vec<TrigTerm> = significant_components[..count]
                 .iter()
                 .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
+                .filter(|t| t.amp.abs() > 1e-6)
                 .collect();
-            candidate_functions.push(TrigFunction::new(subset_fitted));
+            if !subset_fitted.is_empty() {
+                candidate_functions.push(TrigFunction::new(subset_fitted));
+            }
         }
 
         // Felles regresjon på komponenter dersom antallet er håndterbart
@@ -563,7 +614,7 @@ pub fn identify_function_from_data(
                 let re_fitted: Vec<TrigTerm> = significant_components.iter().zip(&c_fit)
                     .filter_map(|(&(kind, f, _), &c)| {
                         let s = snap_amplitude(c);
-                        if s.abs() > 1e-4 { Some(TrigTerm::new(kind, f, s)) } else { None }
+                        if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
                     })
                     .collect();
                 if !re_fitted.is_empty() {
@@ -577,6 +628,19 @@ pub fn identify_function_from_data(
     candidate_functions.retain(|f| !f.terms.is_empty());
     candidate_functions.sort_by_key(|f| format!("{}", f));
     candidate_functions.dedup();
+
+    // ULTIMAT SIKRING: Dersom candidate_functions mot formodning er tom,
+    // ta det sterkeste spektralpunktet direkte slik at det ALLTID finnes en kandidat
+    if candidate_functions.is_empty() {
+        let mut sorted_spec = harmonic_spectrum.clone();
+        sorted_spec.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
+        if let Some(&(kind, k, amp)) = sorted_spec.first() {
+            let safe_amp = if amp.abs() > 1e-6 { amp } else { 1.0 };
+            candidate_functions.push(TrigFunction::new(vec![TrigTerm::new(kind, k, safe_amp)]));
+        } else {
+            candidate_functions.push(TrigFunction::new(vec![TrigTerm::sin(1, 1.0)]));
+        }
+    }
 
     let mut evaluated_candidates = Vec::new();
 

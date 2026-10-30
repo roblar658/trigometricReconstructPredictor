@@ -174,6 +174,43 @@ pub fn export_flac_to_csv<P: AsRef<Path>>(
     Ok(())
 }
 
+/// Søker gjennom FLAC-filen og finner første tidspunkt (i sekunder) der lydamplituden overstiger en gitt terskel (f.eks. 0.03)
+pub fn find_first_active_second<P: AsRef<Path>>(path: P, threshold: f64) -> Option<f64> {
+    let mut reader = FlacReader::open(path.as_ref()).ok()?;
+    let streaminfo = reader.streaminfo();
+    let sample_rate = streaminfo.sample_rate;
+    let channels = streaminfo.channels;
+    let bits_per_sample = streaminfo.bits_per_sample;
+    if sample_rate == 0 || channels == 0 || bits_per_sample == 0 {
+        return None;
+    }
+    let norm_factor = (1i64 << (bits_per_sample - 1)) as f64;
+    let mut samples_iter = reader.samples();
+    let mut frame_idx = 0u64;
+
+    loop {
+        let mut sum_ch = 0.0;
+        let mut got_frame = false;
+        for _ in 0..channels {
+            if let Some(Ok(sample)) = samples_iter.next() {
+                sum_ch += sample as f64;
+                got_frame = true;
+            } else {
+                return None;
+            }
+        }
+        if !got_frame {
+            return None;
+        }
+        let y = (sum_ch / channels as f64) / norm_factor;
+        if y.abs() >= threshold {
+            return Some(frame_idx as f64 / sample_rate as f64);
+        }
+        frame_idx += 1;
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

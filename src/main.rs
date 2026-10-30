@@ -105,6 +105,12 @@ enum Commands {
 
         #[arg(long, help = "Eksporter rapport til PDF-fil (f.eks. --pdf rapport.pdf)")]
         pdf: Option<PathBuf>,
+
+        #[arg(long, help = "Begrens analysen til et markert sub-område med x >= sub_min_x")]
+        sub_min_x: Option<f64>,
+
+        #[arg(long, help = "Begrens analysen til et markert sub-område med x <= sub_max_x")]
+        sub_max_x: Option<f64>,
     },
 
     /// Analyser en FLAC-lydfil, konverter til CSV og/eller identifiser underliggende trigonometrisk funksjon
@@ -135,6 +141,12 @@ enum Commands {
 
         #[arg(long, help = "Eksporter rapport til PDF-fil (f.eks. --pdf rapport.pdf)")]
         pdf: Option<PathBuf>,
+
+        #[arg(long, help = "Begrens analysen til et markert sub-område med x >= sub_min_x")]
+        sub_min_x: Option<f64>,
+
+        #[arg(long, help = "Begrens analysen til et markert sub-område med x <= sub_max_x")]
+        sub_max_x: Option<f64>,
     },
 
     /// Generer en syntetisk CSV-fil med en gitt formel og valgfri støy for testing (KUN sin og cos støttes)
@@ -268,11 +280,18 @@ async fn run_cli_command(command: Commands) {
                 }
             }
 
-            Commands::AnalyzeCsv { file, max_n, tolerance, plot, pdf } => {
+            Commands::AnalyzeCsv { file, max_n, tolerance, plot, pdf, sub_min_x, sub_max_x } => {
                 let is_flac = file.extension().map(|e| e.to_string_lossy().to_lowercase() == "flac").unwrap_or(false);
+                let max_n = if is_flac && max_n <= 30 { 1000 } else { max_n };
                 let points = if is_flac {
                     println!("{}", "Oppdaget FLAC-lydfil, dekoder lydstrøm...".cyan());
-                    let opts = flac_loader::FlacExtractionOptions::default();
+                    let mut opts = flac_loader::FlacExtractionOptions::default();
+                    if let Some(act) = flac_loader::find_first_active_second(&file, 0.025) {
+                        if act > 0.15 {
+                            opts.start_seconds = (act * 100.0).floor() / 100.0;
+                            println!("⚡ {}", format!("Innledende stillhet oppdaget. Starter ved t = {:.2}s der lyd/tale begynner.", opts.start_seconds).yellow());
+                        }
+                    }
                     let (meta, pts) = match flac_loader::read_flac_data(&file, &opts) {
                         Ok(res) => res,
                         Err(e) => {
@@ -294,6 +313,16 @@ async fn run_cli_command(command: Commands) {
                             return;
                         }
                     }
+                };
+
+                let points = if sub_min_x.is_some() || sub_max_x.is_some() {
+                    let lo = sub_min_x.unwrap_or(f64::NEG_INFINITY);
+                    let hi = sub_max_x.unwrap_or(f64::INFINITY);
+                    let filtered: Vec<_> = points.into_iter().filter(|p| p.x >= lo && p.x <= hi).collect();
+                    println!("🔍 {}", format!("Analyserer markert sub-område x ∈ [{:.3}, {:.3}] ({} punkter)", lo, hi, filtered.len()).yellow());
+                    filtered
+                } else {
+                    points
                 };
 
                 println!("Leste {} datapunkter.", points.len().to_string().yellow());
@@ -369,11 +398,35 @@ async fn run_cli_command(command: Commands) {
                 tolerance,
                 plot,
                 pdf,
+                sub_min_x,
+                sub_max_x,
             } => {
                 println!("{}", "Leser og dekoder FLAC-lydfil...".cyan());
+
+                let (effective_start, auto_seeked) = if start_seconds == 0.0 {
+                    if let Some(act) = flac_loader::find_first_active_second(&file, 0.025) {
+                        if act > 0.15 {
+                            ((act * 100.0).floor() / 100.0, true)
+                        } else {
+                            (0.0, false)
+                        }
+                    } else {
+                        (0.0, false)
+                    }
+                } else {
+                    (start_seconds, false)
+                };
+
+                if auto_seeked {
+                    println!(
+                        "⚡ {}",
+                        format!("Innledende stillhet oppdaget. Starter automatisk ved t = {:.2}s der tale/lyd begynner (bruk --start-seconds 0.001 for å tvinge start fra 0).", effective_start).yellow()
+                    );
+                }
+
                 let opts = flac_loader::FlacExtractionOptions {
                     max_points,
-                    start_seconds,
+                    start_seconds: effective_start,
                     duration_seconds: None,
                     time_as_hz_radians: hz_scale,
                 };
@@ -394,6 +447,16 @@ async fn run_cli_command(command: Commands) {
                     meta.duration_seconds
                 );
                 println!("Utlest {} analysepunkter (x-skala: {}).", points.len().to_string().green(), if hz_scale { "k = Hz" } else { "x = sekunder" });
+
+                let points = if sub_min_x.is_some() || sub_max_x.is_some() {
+                    let lo = sub_min_x.unwrap_or(f64::NEG_INFINITY);
+                    let hi = sub_max_x.unwrap_or(f64::INFINITY);
+                    let filtered: Vec<_> = points.into_iter().filter(|p| p.x >= lo && p.x <= hi).collect();
+                    println!("🔍 {}", format!("Analyserer markert sub-område x ∈ [{:.3}, {:.3}] ({} punkter)", lo, hi, filtered.len()).yellow());
+                    filtered
+                } else {
+                    points
+                };
 
                 if let Some(ref csv_out) = export_csv {
                     match flac_loader::export_flac_to_csv(&points, csv_out, meta.sample_rate, hz_scale) {

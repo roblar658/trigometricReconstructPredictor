@@ -206,6 +206,7 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1
 2. **Fane 2: CSV & FLAC Lydanalyse / Formelgjenkjenning**:
    - **`📂 Åpne CSV / FLAC-lydfil...`**: Støtter både tabellfiler (`.csv`, `.txt`) og tapsfrie FLAC-lydfiler (`.flac`). Filer leses inn og **analyseres automatisk med én gang**.
    - **Direkte FLAC-dekoding**: FLAC-filer (mono/stereo, 16/24-bit, vilkårlig samplingsfrekvens opptil 192 kHz) dekodes tapsfritt i sanntid.
+   - **Automatisk stillhetsdeteksjon & Hopp til aktiv lyd**: Dersom et lydopptak (f.eks. 	e.flac) starter med stillhet eller bakgrunnsstøy, oppdages dette automatisk slik at analysen starter direkte der lyden/talen begynner. Brukeren kan også fritt justere starttidspunkt med **Start (sek)** eller trykke **⚡ Hopp til aktiv lyd**.
    - **Tonehøyde i Hertz ($k = \text{Hz}$)**: Med standard tidsskalering $x = 2\pi t$ representerer funksjonens frekvens $k$ direkte den akustiske tonehøyden i Hertz (f.eks. $\sin(440x)$ for kammertone A ved 440 Hz).
    - **`💾 Lagre som CSV...`**: Eksporterer innleste lyd- og måledata direkte til en ren, universell CSV-fil (`t_sec, x, y`) klar for regneark eller ekstern lagring.
    - **Maks $k$**: Juster maksimal frekvens som skal undersøkes. Det er **ingen øvre grense** på $k$ (kan settes til 1000, 5000 eller mer; systemet beskytter automatisk mot aliasing via datasettets Nyquist-frekvens).
