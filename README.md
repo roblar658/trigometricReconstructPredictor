@@ -40,119 +40,69 @@ hvor $a_k, b_m \in \mathbb{R}$ er reelle amplituder og $\omega_k, \lambda_m \in 
 
 ---
 
-## 2. Matematiske Bevis og Teoretisk Fundament
+## 2. Teoretisk Fundament og Hvorfor Teoremene er Viktige
 
-### Teorem 1: Analytiske Deriverte og Ekstremumkriterier
-La $f(x) \in C^\infty(\mathbb{R})$ være definert ved:
+Systemet bygger på tre fundamentale matematiske prinsipper. I stedet for abstrakte bevis, belyser denne seksjonen hvorfor hvert teorem er kritisk for beregningsnøyaktighet, GPU-ytelse og robust formelgjenvinning:
+
+---
+
+### Teorem 1: Analytiske Deriverte og Kvadratisk Konvergens (Newton-Raphson)
+
+For den generelle trigonometriske funksjonen:
 $$f(x) = \sum_{k} a_k \sin(\omega_k x) + \sum_{m} b_m \cos(\lambda_m x)$$
 
-#### Bevis for deriverte:
-Ved lineariteten til den differensielle operatoren $\frac{d}{dx}$ og kjerneregelen:
-$$\frac{d}{dx}\sin(\omega x) = \omega \cos(\omega x), \quad \frac{d}{dx}\cos(\lambda x) = -\lambda \sin(\lambda x)$$
-
-Følgelig er førstederiverte $f'(x)$ eksakt gitt ved:
+beregnes de eksakte deriverte analytisk i stedet for numerisk:
 $$f'(x) = \sum_{k} \omega_k a_k \cos(\omega_k x) - \sum_{m} \lambda_m b_m \sin(\lambda_m x)$$
-
-Tilsvarende, ved å derivere $f'(x)$:
-$$\frac{d}{dx}\cos(\omega x) = -\omega \sin(\omega x), \quad \frac{d}{dx}\sin(\lambda x) = \lambda \cos(\lambda x)$$
-
-Dette gir den eksakte andrederiverte $f''(x)$:
 $$f''(x) = -\sum_{k} \omega_k^2 a_k \sin(\omega_k x) - \sum_{m} \lambda_m^2 b_m \cos(\lambda_m x)$$
 
-#### Klassifisering av ekstrema:
-Et punkt $x^* \in [0, 2\pi]$ kalles et stasjonært punkt hvis og bare hvis:
-$$f'(x^*) = 0$$
+Nullpunkter for førstederiverte ($f'(x^*) = 0$) klassifiseres direkte via andrederiverttesten:
+* **Toppunkt (Maksimum)**: $f''(x^*) < 0$
+* **Bunnpunkt (Minimum)**: $f''(x^*) > 0$
 
-Ved Taylors teorem om $x^*$ har vi for små $\delta x$:
-$$f(x^* + \delta x) = f(x^*) + f'(x^*)\delta x + \frac{1}{2}f''(x^*)\delta x^2 + \mathcal{O}(\delta x^3)$$
-
-Siden $f'(x^*) = 0$:
-$$f(x^* + \delta x) - f(x^*) = \frac{1}{2}f''(x^*)\delta x^2 + \mathcal{O}(\delta x^3)$$
-1. **Lokalt Maksimum (Toppunkt)**: Hvis $f''(x^*) < 0$, er $\frac{1}{2}f''(x^*)\delta x^2 < 0$ for alle $\delta x \neq 0$ i en omegn om $x^*$. Følgelig er $f(x^*) > f(x^* + \delta x)$.
-2. **Lokalt Minimum (Bunnpunkt)**: Hvis $f''(x^*) > 0$, er $\frac{1}{2}f''(x^*)\delta x^2 > 0$, og $f(x^*) < f(x^* + \delta x)$.
-
-#### Kvadratisk Konvergens med Newton-Raphson:
-For å bestemme nullpunktet til $f'(x)$ med maskinpresisjon på GPU, anvendes Newton-Raphson iterasjon:
+Sub-grid ekstremalpunkter lokaliseres med Newton-Raphson iterasjon på GPU:
 $$x_{n+1} = x_n - \frac{f'(x_n)}{f''(x_n)}$$
 
-Ved Taylor-utvikling av $f'(x^*)$ om $x_n$, der $f'(x^*) = 0$:
-$$0 = f'(x_n) + f''(x_n)(x^* - x_n) + \frac{1}{2}f'''(\xi_n)(x^* - x_n)^2$$
-
-Divider med $f''(x_n)$ og la feilen ved iterasjon $n$ være $e_n = x_n - x^*$:
-$$e_{n+1} = \frac{f'''(\xi_n)}{2 f''(x_n)} e_n^2 \implies |e_{n+1}| \le C |e_n|^2$$
-
-Dette beviser **kvadratisk konvergens** ($\mathcal{O}(e_n^2)$), som sikrer sub-grid ekstremal-lokalisering med nøyaktighet $< 10^{-7}$ på kun 2–3 iterasjoner per GPU-tråd.
+#### Hvorfor dette teoremet er viktig:
+1. **Eliminerer numerisk differensiasjonsstøy på GPU**: Numerisk derivasjon (som finite differences) taper maskinpresisjon, er svært følsom for avrundingsfeil ved små steglengder ($\Delta x$), og krever flere kostbare minneaksesser. Analytisk derivasjon gir eksakt matematisk presisjon uten tap av signifikante siffer.
+2. **Kvadratisk konvergens ($\mathcal{O}(e_n^2)$) gir sanntidsytelse**: Ved standard diskret grid-søk ville sub-grid nøyaktighet på $10^{-7}$ krevd milliarder av evalueringspunkter, noe som ville overbelastet GPU-minnet og båndbredden. Med Newton-Raphsons kvadratiske feildobling dobles antallet korrekte desimaler for hver iterasjon. Hver GPU-tråd oppnår dermed full maskinpresisjon på kun 2–3 iterasjoner, uavhengig av frekvens.
+3. **Analytisk sikkerhet mot feilklassifisering**: Den analytiske andrederiverte $f''(x^*)$ garanterer en ufeilbarlig distinksjon mellom lokale maksima, minima og vendepunkter, selv i kaotiske interferensmønstre der flere bølgetopper ligger ekstremt tett.
 
 ---
 
-### Teorem 2: Fourier-Ortogonalitet og Spektral Projeksjon
-La funksjonsrommet $L^2([0, 2\pi])$ være utstyrt med det indreproduktet:
-$$\langle u, v \rangle = \int_0^{2\pi} u(x) v(x) \, dx$$
+### Teorem 2: Fourier-Ortogonalitet i Hilbert-rommet $L^2([0, 2\pi])$
 
-#### Bevis for ortogonalitet:
-For vilkårlige heltall $k, m \in \mathbb{N}^+$ gjelder produkt-til-sum identitetene:
-$$\sin(kx)\sin(mx) = \frac{1}{2}\left[\cos((k-m)x) - \cos((k+m)x)\right]$$
-$$\cos(kx)\cos(mx) = \frac{1}{2}\left[\cos((k-m)x) + \cos((k+m)x)\right]$$
-$$\sin(kx)\cos(mx) = \frac{1}{2}\left[\sin((k+m)x) + \sin((k-m)x)\right]$$
-
-Integrasjon over $[0, 2\pi]$ for $k \neq m$:
-$$\int_0^{2\pi} \cos((k \pm m)x) dx = \left[ \frac{\sin((k \pm m)x)}{k \pm m} \right]_0^{2\pi} = 0$$
-
-For $k = m \ge 1$:
-$$\int_0^{2\pi} \sin^2(kx) dx = \int_0^{2\pi} \frac{1 - \cos(2kx)}{2} dx = \pi$$
-$$\int_0^{2\pi} \cos^2(kx) dx = \int_0^{2\pi} \frac{1 + \cos(2kx)}{2} dx = \pi$$
-
-Og for kryssledd:
-$$\int_0^{2\pi} \sin(kx)\cos(mx) dx = 0 \quad \forall k, m$$
-
-Dette etablerer de fundamentale ortogonalitetsrelasjonene:
+Mellom vilkårlige harmoniske svingninger over $[0, 2\pi]$ gjelder de fundamentale ortogonalitetsrelasjonene:
 $$\langle \sin(kx), \sin(mx) \rangle = \pi \delta_{km}, \quad \langle \cos(kx), \cos(mx) \rangle = \pi \delta_{km}, \quad \langle \sin(kx), \cos(mx) \rangle = 0$$
 
-Følgelig er Fourier-projeksjonene for et signal $f(x)$:
-$$a_k = \frac{\langle f(x), \sin(kx) \rangle}{\langle \sin(kx), \sin(kx) \rangle} = \frac{1}{\pi} \int_0^{2\pi} f(x) \sin(kx) \, dx$$
-$$b_k = \frac{\langle f(x), \cos(kx) \rangle}{\langle \cos(kx), \cos(kx) \rangle} = \frac{1}{\pi} \int_0^{2\pi} f(x) \cos(kx) \, dx$$
+hvor $\delta_{km}$ er Kronecker-deltaet ($\delta_{km} = 1$ hvis $k=m$, ellers $0$). 
 
-Dette beviser at enhver harmonisk komponent kan projiseres ut og isoleres med null kryss-interferens fra øvrige harmoniske ledd.
+Dette tillater isolert projeksjon av hver enkelt amplitude:
+$$a_k = \frac{1}{\pi} \int_0^{2\pi} f(x) \sin(kx) \, dx, \quad b_k = \frac{1}{\pi} \int_0^{2\pi} f(x) \cos(kx) \, dx$$
+
+#### Hvorfor dette teoremet er viktig:
+1. **Null kryss-interferens mellom frekvenser**: Ortogonaliteten garanterer at beregningen av én harmonisk komponent (f.eks. $\sin(5x)$) er fullstendig uavhengig av om signalet også inneholder $\sin(4x)$, $\cos(100x)$ eller 90 andre ledd. Ingen komponent "lekker" energi over til andre frekvenser i det kontinuerlige domenet.
+2. **Unngår ustabile matrise-inversjoner**: I stedet for å måtte løse store, dårlig kondisjonerte lineære ligningssystemer ($N \times N$) eller risikere overtilpasning (overfitting) med tradisjonell polynomisk regresjon, kan hver koeffisient bestemmes direkte og deterministisk via en uavhengig integralprojeksjon i $\mathcal{O}(N)$ tid.
+3. **Optimal støyfiltrering**: Tilfeldig målestøy (hvit støy) er jevnt fordelt over alle frekvenser og har tilnærmet null projeksjon mot de ortogonale basisfunksjonene. Ortogonal integrasjon fungerer derfor som et optimalt støyfilter som trekker frem de sanne signalfrekvensene selv fra ufullstendige eller støyfylte målinger.
 
 ---
 
-### Teorem 3: Trapesregelen og Eliminering av Spektral Lekkasje
+### Teorem 3: Trapesregelen og Spektral Nøyaktighet (Euler-Maclaurin)
 
-Når kontinuerlige funksjoner samples diskret over intervallet $[0, 2\pi]$ med $N$ punkter:
-$$x_i = i \cdot \Delta x, \quad \Delta x = \frac{2\pi}{N - 1}, \quad i = 0, 1, \dots, N-1$$
-vil både startpunktet $x_0 = 0$ og endepunktet $x_{N-1} = 2\pi$ representere den samme tilstanden på sirkelen $\mathbb{R} / 2\pi\mathbb{Z}$.
-
-#### Feilen ved naiv likevekting (Riemann-sum):
-I en standard likevektet diskret sum:
-$$S_k = \sum_{i=0}^{N-1} y_i \cos(kx_i)$$
-bidrar punktet $x=0$ med $y(0)\cos(0) = y(0)$, og punktet $x=2\pi$ bidrar med $y(2\pi)\cos(2k\pi) = y(2\pi) = y(0)$.
-Dette fører til at randverdien telles **to ganger**, og introduserer en systematisk additiv feil:
-$$\epsilon_k \approx \frac{y(0)}{N}$$
-
-For en tett funksjon som $f(x) = 5\sin(x) + [[4, 3\cos(x), 100]]$:
-$$y(0) = 5\sin(0) + \sum_{k=4}^{100} 3\cos(0) = 0 + 97 \times 3 = 291$$
-
-Med $N = 1000$ punkter gir denne naive oppsummeringen:
-$$\epsilon_k \approx \frac{291}{1000} = +0.291$$
-Denne feilen forskyver samtlige cosinus-amplituder fra $3.00$ til $3.29$, og genererer i tillegg falske spøkelses-harmoniske med amplitude $0.29 > 0.15$ på frekvensene $k = 1, 2, 3$ og $k > 100$.
-
-#### Løsning via Trapesregelen og Euler-Maclaurin:
-Euler-Maclaurin formel for numerisk kvadratur av en funksjon $g(x) = y(x)\cos(kx)$:
-$$\sum_{i=0}^{N-1} w_i g(x_i) - \int_0^{2\pi} g(x) dx = \sum_{j=1}^{m} \frac{B_{2j}}{(2j)!} \Delta x^{2j} \left[ g^{(2j-1)}(2\pi) - g^{(2j-1)}(0) \right] + R_{2m}$$
-hvor trapesvektene er definert ved:
+Ved diskret Fourier-analyse av måledata med $N$ punkter på et lukket intervall $[0, 2\pi]$:
+$$x_i = i \cdot \Delta x, \quad \Delta x = \frac{2\pi}{N - 1}, \quad i = 0, \dots, N-1$$
+benytter systemet korrigerte trapesvekter:
 $$w_0 = \frac{\Delta x}{2}, \quad w_{N-1} = \frac{\Delta x}{2}, \quad w_i = \Delta x \quad (0 < i < N-1)$$
-og $B_{2j}$ er Bernoullitallene.
 
-Siden $g(x)$ er en lineærkombinasjon av trigonometriske funksjoner med heltallsfrekvenser, er $g(x)$ periodisk og uendelig glatt ($g \in C^\infty(\mathbb{T})$). Følgelig er alle rand-deriverte identiske ved endepunktene:
-$$g^{(p)}(2\pi) - g^{(p)}(0) = 0 \quad \forall p \ge 0$$
+i stedet for en naiv likevektet Riemann-sum.
 
-Dette medfører at **samtlige polynomielle feilledd i Euler-Maclaurin-summen forsvinner identisk**:
-$$\sum_{i=0}^{N-1} w_i g(x_i) - \int_0^{2\pi} g(x) dx = \mathcal{O}\left(e^{-c/\Delta x}\right)$$
-
-Trapesregelen oppnår dermed **spektral nøyaktighet** (eksponensiell konvergens).
-Dette beviser matematisk hvorfor Fourier-projeksjon med trapesvekter eliminerer lekkasjen fullstendig og gjenvinner eksakt:
-$$A_k = 3.00000000 \quad (k \in [4, 100]), \quad B_1 = 5.00000000, \quad A_{1..3} = 0.00000000$$
-med $R^2 = 1.0000$ og $\text{RMSE} = 0.0000$.
+#### Hvorfor dette teoremet er viktig:
+1. **Eliminering av kunstig randlekkasje (Endepunktsdobling)**: I en lukket måleserie $[0, 2\pi]$ representerer $x=0$ og $x=2\pi$ nøyaktig samme punkt på enhetssirkelen. En naiv likevektet oppsummering summerer dette punktet to ganger. For en tett funksjon som $f(x) = [[4, 3\cos(x), 100]] + 5\sin(x)$ er randverdien $f(0) = 291$. Ved likevekting forårsaker dette en kunstig additiv forskyvning på $\epsilon \approx \frac{291}{1000} \approx +0.291$ på *samtlige* cosinus-amplituder, noe som forvrenger modellen og genererer en mengde falske «spøkelses-ledd».
+2. **Eksponensiell (spektral) konvergens for glatte periodiske funksjoner**: I henhold til Euler-Maclaurins formel bestemmes feilen i trapesintegrasjon av differansen mellom de ulike ordens deriverte i endepunktene:
+   $$\text{Feil} \propto \sum_{j} c_j \Delta x^{2j} \left[ g^{(2j-1)}(2\pi) - g^{(2j-1)}(0) \right]$$
+   Siden trigonometriske funksjoner er $2\pi$-periodiske og $C^\infty$ (uendelig glatte), er alle deriverte identiske i endepunktene: $g^{(p)}(2\pi) = g^{(p)}(0)$ for *alle* $p \ge 0$. Dermed **kansellerer alle polynomielle feilledd identisk**.
+3. **Eksakt rekonstruksjon av tette intervaller**: Resultatet av denne kanselleringen er at trapesregelen oppnår spektral nøyaktighet. Dette gjør at systemet klarer å gjenvinne selv tette intervaller med 98 ledd (`[[4, 3cos(x), 100]] + 5sin(x)`) med feilfri nøyaktighet:
+   $$R^2 = 1.0000 \quad \text{og} \quad \text{RMSE} = 0.0000$$
+   uten noen form for falske frekvenser eller spøkelsesledd.
 
 ---
 
