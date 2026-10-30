@@ -1,0 +1,28 @@
+# Rust build artifacts
+/target
+*.pdb
+*.exe
+*.old
+
+# Generated reports & documents
+*.html
+*.pdf
+
+# Temporary scratch CSV datasets from ad-hoc GUI runs
+/datasett.csv
+/hamster.csv
+/norda.csv
+/rean.csv
+/reas.csv
+/tada.csv
+/tektket.csv
+/test_data.csv
+/teter
+/tetet.csv
+/todo.csv
+/tokko.csv
+/tran.csv
+/trarrrr.csv
+/tree.csv
+/treet.csv
+/ttekkk.csv
