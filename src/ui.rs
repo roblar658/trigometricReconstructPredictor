@@ -826,7 +826,12 @@ impl ExtremaApp {
                     ui.separator();
 
                     ui.label(RichText::new("Maks k:").strong().size(12.0));
-                    ui.add(egui::DragValue::new(&mut self.csv_max_n).range(4..=256));
+                    ui.add(
+                        egui::DragValue::new(&mut self.csv_max_n)
+                            .range(1..=u32::MAX)
+                            .speed(1.0),
+                    )
+                    .on_hover_text("Maksimal frekvens k som testes (ingen øvre grense)");
 
                     ui.label(RichText::new("Maks ledd/linje:").strong().size(12.0));
                     ui.add(egui::DragValue::new(&mut self.csv_terms_per_line).range(1..=12));
