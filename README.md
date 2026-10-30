@@ -192,12 +192,15 @@ cargo run -- analyze-csv min_data.csv --pdf csv_rapport.pdf
 cargo test
 ```
 
-### D. Bygge MSI-Installasjonspakke (WiX Toolset v4):
-Programmet inkluderer komplett oppsett for å generere en frittstående Windows Installer (`.msi`) med innebygd sluttbrukerlisens (EULA) og snarveier:
+### D. MSI-Installasjonspakke (Windows Installer):
+Klar-til-bruk installasjonsfil finnes i mappen `install/`:
+* **Installasjonsfil**: [`install/TrigonometriskEkstremanalyse-Setup-v1.1.0.msi`](install/TrigonometriskEkstremanalyse-Setup-v1.1.0.msi)
+
+For å bygge installasjonspakken på nytt fra kildekode med WiX Toolset v4:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
 ```
-Dette produserer `target/wix/TrigonometriskEkstremanalyse-Setup-v1.1.0.msi` med WiX UI-lisensdialog, startmeny- og skrivebordssnarveier.
+Dette produserer en selvstendig MSI-pakke med WiX UI-lisensdialog (EULA), startmeny- og skrivebordssnarveier.
 
 ---
 

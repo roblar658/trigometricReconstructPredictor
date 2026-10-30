@@ -31,8 +31,15 @@ Write-Host "Bygger MSI-installasjonspakke med WiX Toolset v4..." -ForegroundColo
 wix build wix\main.wxs -ext WixToolset.UI.wixext -o $msiOut
 
 if ($LASTEXITCODE -eq 0) {
+    if (-not (Test-Path "install")) {
+        New-Item -ItemType Directory -Path "install" -Force | Out-Null
+    }
+    $installMsi = "install\TrigonometriskEkstremanalyse-Setup-v1.1.0.msi"
+    Copy-Item $msiOut $installMsi -Force
+
     Write-Host "[OK] MSI-installasjonspakke bygget med suksess!" -ForegroundColor Green
-    Write-Host "  Filsti: $msiOut" -ForegroundColor White
+    Write-Host "  Filsti (bygg):    $msiOut" -ForegroundColor White
+    Write-Host "  Filsti (install): $installMsi" -ForegroundColor Cyan
 } else {
     Write-Host "[FEIL] Feil under bygging av MSI (feilkode $LASTEXITCODE)" -ForegroundColor Red
 }
