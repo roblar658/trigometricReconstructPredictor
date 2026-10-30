@@ -31,9 +31,8 @@ Write-Host "Bygger MSI-installasjonspakke med WiX Toolset v4..." -ForegroundColo
 wix build wix\main.wxs -ext WixToolset.UI.wixext -o $msiOut
 
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "✔ MSI-installasjonspakke bygget med suksess!" -ForegroundColor Green
+    Write-Host "[OK] MSI-installasjonspakke bygget med suksess!" -ForegroundColor Green
     Write-Host "  Filsti: $msiOut" -ForegroundColor White
 } else {
-    Write-Host "❌ Feil under bygging av MSI (feilkode $LASTEXITCODE)" -ForegroundColor Red
+    Write-Host "[FEIL] Feil under bygging av MSI (feilkode $LASTEXITCODE)" -ForegroundColor Red
 }
-
