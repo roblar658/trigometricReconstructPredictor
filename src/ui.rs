@@ -187,7 +187,7 @@ impl Default for ExtremaApp {
             sub_range_min_x: 0.0,
             sub_range_max_x: 2.0 * std::f64::consts::PI,
 
-            csv_enable_mouse_zoom: false,
+            csv_enable_mouse_zoom: true,
             csv_plot_bounds_request: None,
             csv_current_bounds: None,
 
@@ -509,15 +509,12 @@ impl ExtremaApp {
                             self.sub_range_min_x = full_min_x;
                             self.sub_range_max_x = full_max_x;
                             self.sub_range_enabled = false;
+                            let y_min = pts.iter().map(|p| p.y).fold(0.0f64, f64::min);
+                            let y_max = pts.iter().map(|p| p.y).fold(0.0f64, f64::max);
+                            let pad = (y_max - y_min).abs().max(0.05) * 0.15;
+                            self.csv_plot_bounds_request = Some([full_min_x, y_min - pad, full_max_x, y_max + pad]);
                         }
                         self.csv_file_path = Some(path);
-                        let full_min_x = pts.iter().map(|p| p.x).fold(f64::INFINITY, f64::min);
-                        let full_max_x = pts.iter().map(|p| p.x).fold(f64::NEG_INFINITY, f64::max);
-                        if full_max_x > full_min_x {
-                            self.sub_range_min_x = full_min_x;
-                            self.sub_range_max_x = full_max_x;
-                            self.sub_range_enabled = false;
-                        }
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
                         if self.flac_options.time_as_hz_radians && self.csv_max_n < 2000 {
@@ -543,6 +540,10 @@ impl ExtremaApp {
                             self.sub_range_min_x = full_min_x;
                             self.sub_range_max_x = full_max_x;
                             self.sub_range_enabled = false;
+                            let y_min = data.iter().map(|p| p.y).fold(0.0f64, f64::min);
+                            let y_max = data.iter().map(|p| p.y).fold(0.0f64, f64::max);
+                            let pad = (y_max - y_min).abs().max(0.05) * 0.15;
+                            self.csv_plot_bounds_request = Some([full_min_x, y_min - pad, full_max_x, y_max + pad]);
                         }
                         self.csv_file_path = Some(path);
                         self.flac_meta = None;
@@ -1324,7 +1325,7 @@ impl ExtremaApp {
 
             let y_min = self.csv_data.iter().map(|p| p.y).fold(0.0f64, f64::min);
             let y_max = self.csv_data.iter().map(|p| p.y).fold(0.0f64, f64::max);
-            let y_pad = (y_max - y_min).abs().max(0.1) * 3.0;
+            let y_pad = (y_max - y_min).abs().max(0.05) * 0.15;
             let y_bot = y_min - y_pad;
             let y_top = y_max + y_pad;
 
