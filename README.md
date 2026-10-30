@@ -9,6 +9,10 @@ Systemet består av to integrerte moduler:
 > [!IMPORTANT]
 > **Støttede funksjoner:** Programmet støtter vilkårlige lineærkombinasjoner av **KUN sinus (`sin`) og cosinus (`cos`)**. Andre matematiske funksjoner (som `tan`, `cot`, `sec`, `exp`, `log`, etc.) støttes ikke og avvises deterministisk i parsingsleddet.
 
+## Bilder
+
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/4c602882-fde9-49e4-a64a-8ee0a507c736" />
+
 ---
 
 ## 1. Funksjonsdefinisjon og Intervallsyntaks
