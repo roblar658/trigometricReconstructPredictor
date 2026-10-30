@@ -6,7 +6,7 @@ use crate::model::TrigFunction;
 use crate::patterns::{self, ExtremaPatternReport};
 use crate::pdf_exporter;
 use eframe::egui::{self, Color32, RichText, Stroke};
-use egui_plot::{Line, MarkerShape, Plot, Points, PlotPoints, Polygon, VLine};
+use egui_plot::{Line, MarkerShape, Plot, Points, PlotPoints, Polygon, VLine, PlotBounds};
 use std::f64::consts::TAU;
 use std::fs::File;
 use std::io::Write;
@@ -115,6 +115,11 @@ pub struct ExtremaApp {
     pub sub_range_min_x: f64,
     pub sub_range_max_x: f64,
 
+    // Zoom og pan for CSV/FLAC-grafen
+    pub csv_enable_mouse_zoom: bool,
+    pub csv_plot_bounds_request: Option<[f64; 4]>,
+    pub csv_current_bounds: Option<[f64; 4]>,
+
     // Syntetisk datasett-generering for CSV
     pub gen_formula: String,
     pub gen_points: usize,
@@ -181,6 +186,10 @@ impl Default for ExtremaApp {
             sub_range_enabled: false,
             sub_range_min_x: 0.0,
             sub_range_max_x: 2.0 * std::f64::consts::PI,
+
+            csv_enable_mouse_zoom: false,
+            csv_plot_bounds_request: None,
+            csv_current_bounds: None,
 
             gen_formula: "sin(x) + cos(2x)".to_string(),
             gen_points: 2000,
@@ -1273,6 +1282,43 @@ impl ExtremaApp {
 
             ui.add_space(2.0);
 
+            // --- ZOOM-VERKTØYLINJE FOR CSV/FLAC-GRAF ---
+            let mut zoom_to_sub = false;
+            let mut zoom_in_req = false;
+            let mut zoom_out_req = false;
+            let mut reset_zoom_req = false;
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🔍 Zoom & Visning:").strong().size(12.5).color(theme.text_secondary));
+
+                if ui
+                    .button(RichText::new("🔍 Zoom til sub-område").strong().color(Color32::from_rgb(255, 215, 0)))
+                    .on_hover_text("Zoom direkte inn på det markerte gule sub-området [minX, maxX]")
+                    .clicked()
+                {
+                    zoom_to_sub = true;
+                }
+
+                if ui.button("🔍+ Zoom inn").on_hover_text("Zoom 30% inn på midten av grafen").clicked() {
+                    zoom_in_req = true;
+                }
+
+                if ui.button("🔍- Zoom ut").on_hover_text("Zoom 40% ut fra midten av grafen").clicked() {
+                    zoom_out_req = true;
+                }
+
+                if ui.button("↺ Vis hele signalet").on_hover_text("Tilbakestill visningen til hele datasettet").clicked() {
+                    reset_zoom_req = true;
+                }
+
+                ui.separator();
+
+                ui.checkbox(&mut self.csv_enable_mouse_zoom, "Mus-zoom")
+                    .on_hover_text("Når aktivert: Rull på musehjulet for å zoome inn/ut i grafen. Du kan også dra med musen for å panorere, eller holde inne for boks-zoom.");
+            });
+
+            ui.add_space(2.0);
+
             let sub_min = if self.sub_range_enabled { self.sub_range_min_x } else { full_min_x };
             let sub_max = if self.sub_range_enabled { self.sub_range_max_x } else { full_max_x };
 
@@ -1282,17 +1328,56 @@ impl ExtremaApp {
             let y_bot = y_min - y_pad;
             let y_top = y_max + y_pad;
 
+            // Håndter zoomforespørsler før plottet tegnes
+            if zoom_to_sub {
+                let sub_pts: Vec<_> = self.csv_data.iter().filter(|p| p.x >= sub_min && p.x <= sub_max).collect();
+                let sub_y_min = sub_pts.iter().map(|p| p.y).fold(y_min, f64::min);
+                let sub_y_max = sub_pts.iter().map(|p| p.y).fold(y_max, f64::max);
+                let pad = (sub_y_max - sub_y_min).abs().max(0.05) * 0.15;
+                self.csv_plot_bounds_request = Some([sub_min, sub_y_min - pad, sub_max, sub_y_max + pad]);
+            } else if zoom_in_req {
+                if let Some([bx0, by0, bx1, by1]) = self.csv_current_bounds {
+                    let mid_x = (bx0 + bx1) / 2.0;
+                    let span_x = (bx1 - bx0) * 0.70;
+                    let mid_y = (by0 + by1) / 2.0;
+                    let span_y = (by1 - by0) * 0.70;
+                    self.csv_plot_bounds_request = Some([mid_x - span_x / 2.0, mid_y - span_y / 2.0, mid_x + span_x / 2.0, mid_y + span_y / 2.0]);
+                }
+            } else if zoom_out_req {
+                if let Some([bx0, by0, bx1, by1]) = self.csv_current_bounds {
+                    let mid_x = (bx0 + bx1) / 2.0;
+                    let span_x = (bx1 - bx0) * 1.40;
+                    let mid_y = (by0 + by1) / 2.0;
+                    let span_y = (by1 - by0) * 1.40;
+                    self.csv_plot_bounds_request = Some([mid_x - span_x / 2.0, mid_y - span_y / 2.0, mid_x + span_x / 2.0, mid_y + span_y / 2.0]);
+                }
+            } else if reset_zoom_req {
+                let pad = (y_max - y_min).abs().max(0.05) * 0.15;
+                self.csv_plot_bounds_request = Some([full_min_x, y_min - pad, full_max_x, y_max + pad]);
+            }
+
             let yellow_fill = Color32::from_rgba_unmultiplied(255, 235, 59, 45); // myk lysende gul bakgrunn
             let yellow_solid = Color32::from_rgb(255, 215, 0); // gull/gul
 
-            // Kompakt plot som passer uten scrolling
+            let bounds_req = self.csv_plot_bounds_request.take();
+            let mut updated_bounds = None;
+
+            // Plot med full støtte for zoom, pan, boks-zoom og valgfri mus-hjul zoom
             let plot_resp = Plot::new("csv_fit_plot")
-                .height(230.0)
+                .height(240.0)
                 .show_grid(true)
-                .allow_scroll(false)
-                .x_axis_label("x")
-                .y_axis_label("y")
+                .allow_drag(true)
+                .allow_zoom(true)
+                .allow_boxed_zoom(true)
+                .allow_scroll(self.csv_enable_mouse_zoom)
+                .x_axis_label(if self.flac_options.time_as_hz_radians { "x = 2π·t (k = Hz)" } else { "x" })
+                .y_axis_label("y (amplitude)")
                 .show(ui, |plot_ui| {
+                    if let Some([bx0, by0, bx1, by1]) = bounds_req {
+                        plot_ui.set_plot_bounds(PlotBounds::from_min_max([bx0, by0], [bx1, by1]));
+                    }
+                    let b = plot_ui.plot_bounds();
+                    updated_bounds = Some([b.min()[0], b.min()[1], b.max()[0], b.max()[1]]);
                     // GUL BAKGRUNNSMARKERING MELLOM minX OG maxX
                     if self.sub_range_enabled || sub_max > sub_min {
                         let poly = Polygon::new(
@@ -1359,6 +1444,10 @@ impl ExtremaApp {
                             .width(2.5),
                     );
                 });
+
+            if let Some(b) = updated_bounds {
+                self.csv_current_bounds = Some(b);
+            }
 
             // Håndter klikk på grafen for å sette minX og maxX interaktivt
             if plot_resp.response.clicked() {
