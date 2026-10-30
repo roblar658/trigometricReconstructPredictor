@@ -50,6 +50,12 @@ pub struct TrigFunction {
     pub terms: Vec<TrigTerm>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormattedSegment {
+    pub text: String,
+    pub is_negative: bool,
+}
+
 // Bakoverkompatibel alias
 pub type SineFunction = TrigFunction;
 
@@ -550,12 +556,10 @@ impl TrigFunction {
         !self.terms.is_empty()
     }
 
-    /// Formaterer funksjonsuttrykket på en kompakt og lesbar måte.
-    /// Hvis en serie på 3 eller flere påfølgende ledd har samme funksjonstype og amplitude,
-    /// komprimeres de automatisk til intervall-notasjon: `[[start, amp*func(x), slutt]]`.
-    pub fn format_expr(&self) -> String {
+    /// Henter en liste over formaterte segmenter (enkeltledd eller komprimerte intervaller).
+    pub fn to_formatted_segments(&self) -> Vec<FormattedSegment> {
         if self.terms.is_empty() {
-            return "0".to_string();
+            return Vec::new();
         }
 
         let mut sin_terms: Vec<&TrigTerm> = self.terms.iter().filter(|t| t.kind == TrigKind::Sin).collect();
@@ -564,12 +568,7 @@ impl TrigFunction {
         sin_terms.sort_by_key(|t| t.freq);
         cos_terms.sort_by_key(|t| t.freq);
 
-        struct Segment {
-            text: String,
-            is_negative: bool,
-        }
-
-        let compress_kind = |terms: Vec<&TrigTerm>, kind_str: &str| -> Vec<Segment> {
+        let compress_kind = |terms: Vec<&TrigTerm>, kind_str: &str| -> Vec<FormattedSegment> {
             let mut segments = Vec::new();
             let mut i = 0;
             while i < terms.len() {
@@ -597,7 +596,7 @@ impl TrigFunction {
                         format!("{:.2}*{}(x)", abs_amp, kind_str)
                     };
 
-                    segments.push(Segment {
+                    segments.push(FormattedSegment {
                         text: format!("[[{}, {}, {}]]", start_f, fn_part, end_f),
                         is_negative: is_neg,
                     });
@@ -620,7 +619,7 @@ impl TrigFunction {
                         format!("{:.2}*{}", abs_amp, fn_part)
                     };
 
-                    segments.push(Segment {
+                    segments.push(FormattedSegment {
                         text: txt,
                         is_negative: is_neg,
                     });
@@ -633,6 +632,15 @@ impl TrigFunction {
         let mut all_segs = Vec::new();
         all_segs.extend(compress_kind(sin_terms, "sin"));
         all_segs.extend(compress_kind(cos_terms, "cos"));
+        all_segs
+    }
+
+    /// Formaterer funksjonsuttrykket på én enkelt linje.
+    pub fn format_expr(&self) -> String {
+        let all_segs = self.to_formatted_segments();
+        if all_segs.is_empty() {
+            return "0".to_string();
+        }
 
         let mut res = String::new();
         for (idx, seg) in all_segs.iter().enumerate() {
@@ -652,6 +660,57 @@ impl TrigFunction {
         }
 
         res
+    }
+
+    /// Formaterer funksjonsuttrykket med et maksimalt antall ledd/intervaller på hver linje.
+    /// Prefiks som standard "f(x) = ".
+    pub fn format_multiline(&self, max_per_line: usize) -> String {
+        self.format_multiline_with_prefix(max_per_line, "f(x) = ")
+    }
+
+    /// Formaterer funksjonsuttrykket over flere linjer med et gitt prefiks og maksimalt antall ledd per linje.
+    pub fn format_multiline_with_prefix(&self, max_per_line: usize, prefix: &str) -> String {
+        let all_segs = self.to_formatted_segments();
+        if all_segs.is_empty() {
+            return format!("{}0", prefix);
+        }
+
+        let max_items = if max_per_line == 0 { 4 } else { max_per_line };
+        let indent = " ".repeat(prefix.len());
+
+        let mut lines = Vec::new();
+        let mut current_line = String::new();
+
+        for (idx, seg) in all_segs.iter().enumerate() {
+            let is_new_line = idx > 0 && idx % max_items == 0;
+            if is_new_line {
+                lines.push(current_line);
+                current_line = format!("{}+ ", indent);
+                if seg.is_negative {
+                    current_line = format!("{}- ", indent);
+                }
+                current_line.push_str(&seg.text);
+            } else if idx == 0 {
+                current_line.push_str(prefix);
+                if seg.is_negative {
+                    current_line.push_str("- ");
+                }
+                current_line.push_str(&seg.text);
+            } else {
+                if seg.is_negative {
+                    current_line.push_str(" - ");
+                } else {
+                    current_line.push_str(" + ");
+                }
+                current_line.push_str(&seg.text);
+            }
+        }
+
+        if !current_line.is_empty() {
+            lines.push(current_line);
+        }
+
+        lines.join("\n")
     }
 }
 
@@ -802,5 +861,17 @@ mod tests {
     fn test_reject_unsupported_function() {
         let err = TrigFunction::parse("tan(x) + sin(x)").unwrap_err();
         assert!(err.contains("KUN sinus (sin) og cosinus (cos) støttes"));
+    }
+
+    #[test]
+    fn test_format_multiline_max_terms_per_line() {
+        let f = TrigFunction::parse("sin(x) + cos(2x) + sin(3x) + cos(4x) + sin(5x) + cos(6x) + sin(7x) + cos(8x) + sin(9x)").unwrap();
+        // Med maks 4 ledd per linje skal 9 ledd fordeles på 3 linjer (4 + 4 + 1)
+        let formatted = f.format_multiline(4);
+        let lines: Vec<&str> = formatted.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("f(x) = "));
+        assert!(lines[1].starts_with("       + "));
+        assert!(lines[2].starts_with("       + "));
     }
 }

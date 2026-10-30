@@ -103,6 +103,7 @@ pub struct ExtremaApp {
     pub csv_file_path: Option<PathBuf>,
     pub csv_data: Vec<DataPoint>,
     pub csv_max_n: u32,
+    pub csv_terms_per_line: usize,
     pub csv_result: Option<IdentificationResult>,
     pub csv_status: Option<String>,
     pub csv_error: Option<String>,
@@ -163,6 +164,7 @@ impl Default for ExtremaApp {
             csv_file_path: None,
             csv_data: Vec::new(),
             csv_max_n: 128,
+            csv_terms_per_line: 4,
             csv_result: None,
             csv_status: None,
             csv_error: None,
@@ -826,6 +828,9 @@ impl ExtremaApp {
                     ui.label(RichText::new("Maks k:").strong().size(12.0));
                     ui.add(egui::DragValue::new(&mut self.csv_max_n).range(4..=256));
 
+                    ui.label(RichText::new("Maks ledd/linje:").strong().size(12.0));
+                    ui.add(egui::DragValue::new(&mut self.csv_terms_per_line).range(1..=12));
+
                     if ui
                         .button(RichText::new("🔍 Analyser & Finn Formel").color(theme.text_success).strong().size(12.5))
                         .on_hover_text("Kjør Fourier-analyse og identifiser hvilke sinus- og cosinusledd dataene består av")
@@ -856,10 +861,11 @@ impl ExtremaApp {
                 .corner_radius(6)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.heading(
-                            RichText::new(format!("Beste tilpassede funksjon: {}", res.best_match.function))
-                                .color(theme.text_success)
-                                .size(15.0),
+                        ui.label(
+                            RichText::new("Beste tilpassede modell:")
+                                .color(theme.text_secondary)
+                                .strong()
+                                .size(13.0),
                         );
                         ui.separator();
                         ui.label(RichText::new(format!("R²: {:.4} ({:.1}%)", res.best_match.r_squared, res.best_match.r_squared * 100.0)).strong().size(12.0));
@@ -868,9 +874,21 @@ impl ExtremaApp {
                         ui.separator();
 
                         if ui.button(RichText::new("⚡ Overfør formel til funksjonsanalyse").strong().size(11.5)).clicked() {
-                            transfer_to_classifier = Some(format!("{}", res.best_match.function).replace("f(x) = ", ""));
+                            transfer_to_classifier = Some(res.best_match.function.format_expr());
                         }
                     });
+
+                    ui.add_space(3.0);
+
+                    // Skriv ut funksjonen med definert maks antall ledd på hver linje
+                    let multiline_fn = res.best_match.function.format_multiline(self.csv_terms_per_line);
+                    ui.label(
+                        RichText::new(multiline_fn)
+                            .color(theme.text_success)
+                            .monospace()
+                            .strong()
+                            .size(13.5),
+                    );
                 });
 
             ui.add_space(3.0);
@@ -922,7 +940,12 @@ impl ExtremaApp {
 
                         for (i, cand) in res.top_candidates.iter().take(4).enumerate() {
                             ui.label(format!("{}", i + 1));
-                            ui.label(RichText::new(format!("{}", cand.function)).strong().color(theme.text_primary));
+                            ui.label(
+                                RichText::new(cand.function.format_multiline(self.csv_terms_per_line))
+                                    .strong()
+                                    .monospace()
+                                    .color(theme.text_primary),
+                            );
                             ui.label(format!("{:.4}", cand.r_squared));
                             ui.label(format!("{:.4}", cand.rmse));
                             ui.label(format!("{:.4}", cand.max_error));

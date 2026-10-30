@@ -288,7 +288,10 @@ pub fn print_identification_report(res: &IdentificationResult) {
     println!("{}\n", "=========================================================================".bright_green());
 
     let best = &res.best_match;
-    println!("  {}: {}", "Beste tilpasning".bold(), best.function.to_string().bright_yellow().bold());
+    println!("  {}:", "Beste tilpasning (maks 4 ledd/linje)".bold());
+    for line in best.function.format_multiline(4).lines() {
+        println!("    {}", line.bright_yellow().bold());
+    }
     let freqs: Vec<String> = best.function.terms.iter().map(|t| t.freq.to_string()).collect();
     println!("  {}: [{}]", "Identifiserte frekvenser".bold(), freqs.join(", ").cyan().bold());
     println!("  {}: {:.5} ({:.2}% match)", "Forklaringsgrad (R²)".bold(), best.r_squared, best.r_squared * 100.0);
@@ -309,7 +312,7 @@ pub fn print_identification_report(res: &IdentificationResult) {
     for (rank, cand) in res.top_candidates.iter().enumerate() {
         cand_table.add_row(vec![
             Cell::new(format!("#{}", rank + 1)),
-            Cell::new(cand.function.to_string()),
+            Cell::new(cand.function.format_multiline(4)),
             Cell::new(format!("{:.4}%", cand.r_squared * 100.0)).fg(if rank == 0 { Color::Green } else { Color::White }),
             Cell::new(format!("{:.5}", cand.rmse)),
             Cell::new(format!("{:.5}", cand.max_error)),
