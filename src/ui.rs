@@ -107,6 +107,8 @@ pub struct ExtremaApp {
     pub csv_result: Option<IdentificationResult>,
     pub csv_status: Option<String>,
     pub csv_error: Option<String>,
+    pub flac_meta: Option<crate::flac_loader::FlacMetadata>,
+    pub flac_options: crate::flac_loader::FlacExtractionOptions,
 
     // Syntetisk datasett-generering for CSV
     pub gen_formula: String,
@@ -168,6 +170,8 @@ impl Default for ExtremaApp {
             csv_result: None,
             csv_status: None,
             csv_error: None,
+            flac_meta: None,
+            flac_options: crate::flac_loader::FlacExtractionOptions::default(),
 
             gen_formula: "sin(x) + cos(2x)".to_string(),
             gen_points: 2000,
@@ -441,28 +445,137 @@ impl ExtremaApp {
         }
     }
 
-    /// Velger og laster CSV-fil
+    /// Velger og laster CSV- eller FLAC-lydfil
     pub fn pick_and_load_csv(&mut self) {
         self.csv_error = None;
         self.csv_status = None;
 
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("CSV-filer", &["csv", "txt"])
+            .add_filter("Måledata & Lydfiler (*.csv, *.flac)", &["csv", "flac", "txt"])
+            .add_filter("CSV-filer (*.csv)", &["csv", "txt"])
+            .add_filter("FLAC-lydfiler (*.flac)", &["flac"])
             .pick_file()
         {
-            match csv_analyzer::read_csv_data(&path) {
-                Ok(data) => {
+            let is_flac = path
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_lowercase() == "flac")
+                .unwrap_or(false);
+
+            if is_flac {
+                match crate::flac_loader::read_flac_data(&path, &self.flac_options) {
+                    Ok((meta, pts)) => {
+                        let hz_info = if self.flac_options.time_as_hz_radians {
+                            " (k = Hz)"
+                        } else {
+                            " (x = t sek)"
+                        };
+                        self.csv_status = Some(format!(
+                            "Lastet FLAC lydfil ({} Hz, {}-bit, {} ch, {} pkt): {}{}",
+                            meta.sample_rate,
+                            meta.bits_per_sample,
+                            meta.channels,
+                            pts.len(),
+                            path.file_name().unwrap_or_default().to_string_lossy(),
+                            hz_info
+                        ));
+                        self.csv_file_path = Some(path);
+                        self.flac_meta = Some(meta);
+                        self.csv_data = pts;
+                        self.analyze_loaded_csv();
+                    }
+                    Err(e) => {
+                        self.csv_error = Some(format!("Kunne ikke lese FLAC-fil: {}", e));
+                    }
+                }
+            } else {
+                match csv_analyzer::read_csv_data(&path) {
+                    Ok(data) => {
+                        self.csv_status = Some(format!(
+                            "Lastet {} datapunkter fra: {}",
+                            data.len(),
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ));
+                        self.csv_file_path = Some(path);
+                        self.flac_meta = None;
+                        self.csv_data = data;
+                        self.analyze_loaded_csv();
+                    }
+                    Err(e) => {
+                        self.csv_error = Some(format!("Kunne ikke lese CSV: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Laster inn gjeldende FLAC-fil på nytt med oppdaterte innstillinger (tidsskala / punkter)
+    pub fn reload_current_flac(&mut self) {
+        if let Some(ref path) = self.csv_file_path.clone() {
+            if path.extension().map(|e| e.to_string_lossy().to_lowercase() == "flac").unwrap_or(false) {
+                match crate::flac_loader::read_flac_data(path, &self.flac_options) {
+                    Ok((meta, pts)) => {
+                        self.flac_meta = Some(meta);
+                        self.csv_data = pts;
+                        self.analyze_loaded_csv();
+                    }
+                    Err(e) => {
+                        self.csv_error = Some(format!("Feil ved gjeninnlesing av FLAC: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Eksporterer det aktive datasettet (f.eks. fra innlest FLAC-lydfil) til en ren (x, y) CSV-fil
+    pub fn export_current_data_to_csv(&mut self) {
+        if self.csv_data.is_empty() {
+            self.csv_error = Some("Ingen data å eksportere".into());
+            return;
+        }
+
+        let default_name = if let Some(ref path) = self.csv_file_path {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            format!("{}_eksportert.csv", stem)
+        } else {
+            "datasett_eksportert.csv".to_string()
+        };
+
+        if let Some(target_path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("CSV-datasett (*.csv)", &["csv"])
+            .save_file()
+        {
+            let res = if let Some(meta) = &self.flac_meta {
+                crate::flac_loader::export_flac_to_csv(
+                    &self.csv_data,
+                    &target_path,
+                    meta.sample_rate,
+                    self.flac_options.time_as_hz_radians,
+                )
+            } else {
+                let f = File::create(&target_path).map_err(|e| e.to_string());
+                match f {
+                    Ok(mut file) => {
+                        let _ = writeln!(file, "x,y");
+                        for p in &self.csv_data {
+                            let _ = writeln!(file, "{:.8},{:.8}", p.x, p.y);
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                }
+            };
+
+            match res {
+                Ok(()) => {
                     self.csv_status = Some(format!(
-                        "Lastet {} datapunkter fra: {}",
-                        data.len(),
-                        path.file_name().unwrap_or_default().to_string_lossy()
+                        "Eksporterte {} datapunkter til CSV: {}",
+                        self.csv_data.len(),
+                        target_path.file_name().unwrap_or_default().to_string_lossy()
                     ));
-                    self.csv_file_path = Some(path);
-                    self.csv_data = data;
-                    self.analyze_loaded_csv();
                 }
                 Err(e) => {
-                    self.csv_error = Some(format!("Kunne ikke lese CSV: {}", e));
+                    self.csv_error = Some(format!("Feil ved lagring av CSV: {}", e));
                 }
             }
         }
@@ -801,11 +914,21 @@ impl ExtremaApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .button(RichText::new("📂 Bla gjennom etter CSV-fil...").strong().size(12.5).color(theme.text_primary))
-                        .on_hover_text("Velg en CSV-fil med (x, y) eller måledata for å gjenkjenne den underliggende formelen")
+                        .button(RichText::new("📂 Åpne CSV / FLAC-lydfil...").strong().size(12.5).color(theme.text_primary))
+                        .on_hover_text("Velg en CSV-fil eller FLAC-lydfil for direkte Fourier- og OMP-ekstremanalyse")
                         .clicked()
                     {
                         self.pick_and_load_csv();
+                    }
+
+                    if !self.csv_data.is_empty() {
+                        if ui
+                            .button(RichText::new("💾 Lagre som CSV...").strong().size(12.0))
+                            .on_hover_text("Eksporter det aktive datasettet (f.eks. utlest fra FLAC-lydfilen) til en ren (x, y) CSV-fil")
+                            .clicked()
+                        {
+                            self.export_current_data_to_csv();
+                        }
                     }
 
                     if let Some(path) = &self.csv_file_path {
@@ -816,7 +939,7 @@ impl ExtremaApp {
                                 .strong()
                                 .size(12.0),
                         );
-                        ui.label(format!("({} rader innlest)", self.csv_data.len()));
+                        ui.label(format!("({} punkter)", self.csv_data.len()));
                     } else if !self.csv_data.is_empty() {
                         ui.label(RichText::new(format!("(Aktivt datasett: {} punkter)", self.csv_data.len())).color(theme.text_success).size(12.0));
                     } else {
@@ -844,6 +967,40 @@ impl ExtremaApp {
                         self.analyze_loaded_csv();
                     }
                 });
+
+                let mut need_reload_flac = false;
+                if let Some(meta) = self.flac_meta.clone() {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "🎵 FLAC-lyd: {} Hz | {}-bit | {} ch | Totalt: {} prøver ({:.2}s)",
+                                meta.sample_rate, meta.bits_per_sample, meta.channels, meta.total_samples, meta.duration_seconds
+                            ))
+                            .color(theme.text_accent)
+                            .strong()
+                            .size(11.5),
+                        );
+                        ui.separator();
+                        let changed_hz = ui
+                            .checkbox(&mut self.flac_options.time_as_hz_radians, "Frekvens k = Hz (x = 2π·t)")
+                            .on_hover_text("Når aktivert, tilsvarer funksjonens frekvens k tonehøyden i Hertz direkte")
+                            .changed();
+
+                        ui.label(RichText::new("Maks FLAC-pkt:").size(11.5));
+                        let changed_pts = ui
+                            .add(egui::DragValue::new(&mut self.flac_options.max_points).range(200..=50_000).speed(100.0))
+                            .on_hover_text("Antall prøvepunkter som leses ut fra FLAC-lydfilen")
+                            .changed();
+
+                        if changed_hz || changed_pts {
+                            need_reload_flac = true;
+                        }
+                    });
+                }
+                if need_reload_flac {
+                    self.reload_current_flac();
+                }
 
                 if let Some(err) = &self.csv_error {
                     ui.label(RichText::new(format!("❌ {}", err)).color(theme.text_error).strong().size(11.5));

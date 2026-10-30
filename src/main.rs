@@ -1,5 +1,6 @@
 mod classification;
 mod csv_analyzer;
+pub mod flac_loader;
 mod gpu;
 mod model;
 mod patterns;
@@ -100,6 +101,36 @@ enum Commands {
             action = clap::ArgAction::Set,
             help = "Tegn ASCII-kurve etter identifisering"
         )]
+        plot: bool,
+
+        #[arg(long, help = "Eksporter rapport til PDF-fil (f.eks. --pdf rapport.pdf)")]
+        pdf: Option<PathBuf>,
+    },
+
+    /// Analyser en FLAC-lydfil, konverter til CSV og/eller identifiser underliggende trigonometrisk funksjon
+    AnalyzeFlac {
+        #[arg(help = "Filsti til FLAC-lydfilen som skal analyseres")]
+        file: PathBuf,
+
+        #[arg(long, default_value_t = 1000, help = "Maksimal frekvens k som testes under søket (k = Hz)")]
+        max_k: u32,
+
+        #[arg(long, default_value_t = 2000, help = "Maksimalt antall prøvepunkter som leses ut fra FLAC-filen")]
+        max_points: usize,
+
+        #[arg(long, default_value_t = 0.0, help = "Startforsinkelse i sekunder")]
+        start_seconds: f64,
+
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set, help = "Skaler x som 2*pi*t slik at k representerer frekvens i Hz")]
+        hz_scale: bool,
+
+        #[arg(long, help = "Eksporter de utleste datapunktene til en CSV-fil (f.eks. --export-csv lyd.csv)")]
+        export_csv: Option<PathBuf>,
+
+        #[arg(long, default_value_t = 0.02, help = "Toleranse for like verdier")]
+        tolerance: f32,
+
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set, help = "Tegn ASCII-kurve")]
         plot: bool,
 
         #[arg(long, help = "Eksporter rapport til PDF-fil (f.eks. --pdf rapport.pdf)")]
@@ -238,12 +269,30 @@ async fn run_cli_command(command: Commands) {
             }
 
             Commands::AnalyzeCsv { file, max_n, tolerance, plot, pdf } => {
-                println!("{}", "Leser og analyserer CSV-fil...".cyan());
-                let points = match csv_analyzer::read_csv_data(&file) {
-                    Ok(pts) => pts,
-                    Err(e) => {
-                        eprintln!("Feil ved lesing av CSV: {}", e);
-                        return;
+                let is_flac = file.extension().map(|e| e.to_string_lossy().to_lowercase() == "flac").unwrap_or(false);
+                let points = if is_flac {
+                    println!("{}", "Oppdaget FLAC-lydfil, dekoder lydstrøm...".cyan());
+                    let opts = flac_loader::FlacExtractionOptions::default();
+                    let (meta, pts) = match flac_loader::read_flac_data(&file, &opts) {
+                        Ok(res) => res,
+                        Err(e) => {
+                            eprintln!("Feil ved lesing av FLAC: {}", e);
+                            return;
+                        }
+                    };
+                    println!(
+                        "FLAC Metadata: {} Hz | {}-bit | {} ch | Totalt: {} prøver ({:.2}s)",
+                        meta.sample_rate, meta.bits_per_sample, meta.channels, meta.total_samples, meta.duration_seconds
+                    );
+                    pts
+                } else {
+                    println!("{}", "Leser og analyserer CSV-fil...".cyan());
+                    match csv_analyzer::read_csv_data(&file) {
+                        Ok(pts) => pts,
+                        Err(e) => {
+                            eprintln!("Feil ved lesing av CSV: {}", e);
+                            return;
+                        }
                     }
                 };
 
@@ -294,6 +343,119 @@ async fn run_cli_command(command: Commands) {
                             match pdf_exporter::export_to_pdf(
                                 &pdf_file,
                                 "CSV Funksjonsidentifisering & GPU Ekstrema-Klassifisering",
+                                &id_result.best_match.function,
+                                (&ctx.adapter_info.name, &backend_str),
+                                &summary,
+                                &pattern_report,
+                                Some(&id_result),
+                                Some(&ascii_plot_str),
+                            ) {
+                                Ok(p) => println!("{} PDF-rapport lagret: {}", "Vellykket!".green().bold(), p.display()),
+                                Err(e) => eprintln!("{} {}", "Feil ved PDF-generering:".red().bold(), e),
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("GPU-kjørefeil: {}", e),
+                }
+            }
+
+            Commands::AnalyzeFlac {
+                file,
+                max_k,
+                max_points,
+                start_seconds,
+                hz_scale,
+                export_csv,
+                tolerance,
+                plot,
+                pdf,
+            } => {
+                println!("{}", "Leser og dekoder FLAC-lydfil...".cyan());
+                let opts = flac_loader::FlacExtractionOptions {
+                    max_points,
+                    start_seconds,
+                    duration_seconds: None,
+                    time_as_hz_radians: hz_scale,
+                };
+
+                let (meta, points) = match flac_loader::read_flac_data(&file, &opts) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        eprintln!("Feil ved dekoding av FLAC: {}", e);
+                        return;
+                    }
+                };
+
+                println!(
+                    "🎵 FLAC Lydmetadata: {} Hz | {}-bit | {} kanaler | Varighet: {:.2}s",
+                    meta.sample_rate.to_string().yellow(),
+                    meta.bits_per_sample.to_string().yellow(),
+                    meta.channels.to_string().yellow(),
+                    meta.duration_seconds
+                );
+                println!("Utlest {} analysepunkter (x-skala: {}).", points.len().to_string().green(), if hz_scale { "k = Hz" } else { "x = sekunder" });
+
+                if let Some(ref csv_out) = export_csv {
+                    match flac_loader::export_flac_to_csv(&points, csv_out, meta.sample_rate, hz_scale) {
+                        Ok(()) => println!("{} Eksporterte lyddata til CSV: {}", "Vellykket!".green().bold(), csv_out.display()),
+                        Err(e) => eprintln!("Kunne ikke eksportere til CSV: {}", e),
+                    }
+                }
+
+                println!("
+Identifiserer trigonometriske frekvenser (Fourier + OMP, maks k = {})...", max_k);
+                let id_result = match csv_analyzer::identify_function_from_data(&points, max_k) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        eprintln!("Kunne ikke identifisere funksjonen: {}", e);
+                        return;
+                    }
+                };
+
+                visualizer::print_identification_report(&id_result);
+
+                // Kjør GPU-klassifisering og mønsteranalyse
+                let ctx = match gpu::GpuContext::init().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Feil ved GPU-init: {}", e);
+                        return;
+                    }
+                };
+
+                println!("
+Kjører GPU-klassifisering og mønsteranalyse på den identifiserte funksjonen...");
+                let pipeline = gpu::pipeline::ExtremaClassifierPipeline::new(&ctx);
+                let span = id_result.x_range.1 - id_result.x_range.0;
+                let x_max = if span > 0.0 { span as f32 } else { std::f32::consts::TAU };
+
+                match pipeline.run(
+                    &ctx,
+                    &id_result.best_match.function,
+                    0.0,
+                    x_max,
+                    65536,
+                    [0.2, 0.4, 0.6, 0.8],
+                ) {
+                    Ok(summary) => {
+                        visualizer::print_classification_table(&summary, &id_result.best_match.function);
+                        let pattern_report = patterns::analyze_extrema_patterns(&summary.extrema, tolerance);
+                        visualizer::print_pattern_report(&pattern_report);
+                        let ascii_plot_str = visualizer::render_ascii_plot(&id_result.best_match.function, &summary, 70, 18);
+                        if plot {
+                            println!("
+{}
+", "--- ASCII PLOT AV LYDBØLGE OG EKSTREMA ---".bold());
+                            print!("{}", ascii_plot_str);
+                        }
+
+                        if let Some(pdf_file) = pdf {
+                            println!("
+{}", "Genererer PDF-rapport for lydanalysen...".cyan());
+                            let backend_str = format!("{:?}", ctx.adapter_info.backend);
+                            match pdf_exporter::export_to_pdf(
+                                &pdf_file,
+                                "FLAC Lydspekter-identifisering & GPU Ekstrema-Klassifisering",
                                 &id_result.best_match.function,
                                 (&ctx.adapter_info.name, &backend_str),
                                 &summary,

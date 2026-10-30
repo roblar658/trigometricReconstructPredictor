@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
 clap = { version = "4.6.7", features = ["derive"] }
+claxon = "0.4.3"
 colored = "3.1.1"
 comfy-table = "8.0.1"
 csv = "1.4.0"

@@ -203,13 +203,16 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1
    - Trykk **`Enter`** eller **`⚡ Kjør analyse`** for øyeblikkelig GPU-evaluering over intervallet.
    - **`💾 Lagre CSV (x, y)`**: Eksporterer 2000 rene $(x, y)$-datapunkter uten kommentarer.
    - **`📄 Lagre PDF`**: Genererer og åpner fullstendig analyserapport som PDF via isolert Chromium headless.
-2. **Fane 2: CSV-Datasett & Formelgjenkjenning**:
-   - Klikk **`📂 Bla gjennom etter CSV-fil...`** og velg en fil med måledata. Filen leses inn og **analyseres automatisk med én gang**.
-   - **Maks $k$**: Juster maksimal frekvens som skal undersøkes. Det er **ingen øvre grense** på $k$ (kan settes til 256, 1000 eller mer; systemet beskytter automatisk mot aliasing via datagrensens Nyquist-frekvens).
+2. **Fane 2: CSV & FLAC Lydanalyse / Formelgjenkjenning**:
+   - **`📂 Åpne CSV / FLAC-lydfil...`**: Støtter både tabellfiler (`.csv`, `.txt`) og tapsfrie FLAC-lydfiler (`.flac`). Filer leses inn og **analyseres automatisk med én gang**.
+   - **Direkte FLAC-dekoding**: FLAC-filer (mono/stereo, 16/24-bit, vilkårlig samplingsfrekvens opptil 192 kHz) dekodes tapsfritt i sanntid.
+   - **Tonehøyde i Hertz ($k = \text{Hz}$)**: Med standard tidsskalering $x = 2\pi t$ representerer funksjonens frekvens $k$ direkte den akustiske tonehøyden i Hertz (f.eks. $\sin(440x)$ for kammertone A ved 440 Hz).
+   - **`💾 Lagre som CSV...`**: Eksporterer innleste lyd- og måledata direkte til en ren, universell CSV-fil (`t_sec, x, y`) klar for regneark eller ekstern lagring.
+   - **Maks $k$**: Juster maksimal frekvens som skal undersøkes. Det er **ingen øvre grense** på $k$ (kan settes til 1000, 5000 eller mer; systemet beskytter automatisk mot aliasing via datasettets Nyquist-frekvens).
    - **Maks ledd/linje**: Styrer linjebrytningen ved utskrift av rekonstruerte formler slik at store funksjoner forblir lettleste og oversiktlige.
-   - **Presis kurvevisning**: Kurven plottes over hele det faktiske $x$-intervallet til CSV-filen ($[x_{\min}, x_{\max}]$), ikke bare standard $[0, 2\pi]$.
+   - **Presis kurvevisning**: Kurven plottes over hele det faktiske $x$-intervallet til filen ($[x_{\min}, x_{\max}]$), ikke bare standard $[0, 2\pi]$.
    - **Scrollbar kandidattabell**: Tabellen støtter både horisontal og vertikal rulling, der nøkkelmetrikkene ($R^2$, RMSE og Maks feil) vises foran formelkolonnen slik at nøyaktigheten alltid er umiddelbart synlig.
-   - **⚡ Overfør formel til funksjonsanalyse**: Overfører den identifiserte formelen direkte til GPU-analysefanen og synkroniserer automatisk analyseintervallet til CSV-datasettets eksakte grenser.
+   - **⚡ Overfør formel til funksjonsanalyse**: Overfører den identifiserte formelen direkte til GPU-analysefanen og synkroniserer automatisk analyseintervallet til datasettets eksakte grenser.
 
 ### C. Kommandolinje (CLI):
 ```bash
@@ -218,6 +221,9 @@ cargo run -- classify "[[4, 3*cos(x), 100]] + 5sin(x)" --pdf analyse.pdf
 
 # Analyser en CSV-fil fra terminalen
 cargo run -- analyze-csv min_data.csv --pdf csv_rapport.pdf
+
+# Analyser en FLAC-lydfil direkte, eksporter til CSV og lagre PDF-rapport
+cargo run -- analyze-flac lyd.flac --export-csv lyd.csv --pdf lyd_rapport.pdf
 
 # Kjør alle automatiserte enhetstester
 cargo test
