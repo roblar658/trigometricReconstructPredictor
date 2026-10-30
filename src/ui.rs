@@ -104,6 +104,8 @@ pub struct ExtremaApp {
     pub csv_data: Vec<DataPoint>,
     pub csv_max_n: u32,
     pub csv_terms_per_line: usize,
+    pub csv_fx_expanded: bool,
+    pub csv_fx_max_lines: usize,
     pub csv_result: Option<IdentificationResult>,
     pub csv_status: Option<String>,
     pub csv_error: Option<String>,
@@ -177,6 +179,8 @@ impl Default for ExtremaApp {
             csv_data: Vec::new(),
             csv_max_n: 128,
             csv_terms_per_line: 4,
+            csv_fx_expanded: true,
+            csv_fx_max_lines: 6,
             csv_result: None,
             csv_status: None,
             csv_error: None,
@@ -1097,6 +1101,10 @@ impl ExtremaApp {
                     ui.label(RichText::new("Maks ledd/linje:").strong().size(12.0));
                     ui.add(egui::DragValue::new(&mut self.csv_terms_per_line).range(1..=12));
 
+                    ui.label(RichText::new("Rullegardin maks linjer:").strong().size(12.0));
+                    ui.add(egui::DragValue::new(&mut self.csv_fx_max_lines).range(1..=20))
+                        .on_hover_text("Maksimalt antall synlige linjer i rullegardinen for f(x) (standard: 6 linjer)");
+
                     if ui
                         .button(RichText::new("🔍 Analyser & Finn Formel").color(theme.text_success).strong().size(12.5))
                         .on_hover_text("Kjør Fourier-analyse og identifiser hvilke sinus- og cosinusledd dataene består av")
@@ -1177,6 +1185,10 @@ impl ExtremaApp {
                 .inner_margin(8)
                 .corner_radius(6)
                 .show(ui, |ui| {
+                    let multiline_fn = res.best_match.function.format_multiline(self.csv_terms_per_line);
+                    let line_count = multiline_fn.lines().count();
+                    let max_lines = self.csv_fx_max_lines.max(1);
+
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new("Beste tilpassede modell:")
@@ -1190,22 +1202,79 @@ impl ExtremaApp {
                         ui.label(format!("RMSE: {:.5}", res.best_match.rmse));
                         ui.separator();
 
-                        if ui.button(RichText::new("⚡ Overfør formel til funksjonsanalyse").strong().size(11.5)).clicked() {
+                        if ui.button(RichText::new("⚡ Overfør formel").strong().size(11.5))
+                            .on_hover_text("Overfør denne formelen til funksjonsanalyse og ekstrema-klassifisering")
+                            .clicked()
+                        {
                             transfer_to_classifier = Some(res.best_match.function.format_expr());
+                        }
+
+                        if ui.button(RichText::new("📋 Kopier").size(11.5))
+                            .on_hover_text("Kopier hele f(x)-uttrykket til utklippstavlen")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(multiline_fn.clone());
+                        }
+
+                        let fold_label = if self.csv_fx_expanded { "▲ Rull opp" } else { "▼ Rull ned" };
+                        if ui.button(RichText::new(fold_label).strong().size(11.5))
+                            .on_hover_text("Rull opp eller ned visningen av funksjonsuttrykket f(x)")
+                            .clicked()
+                        {
+                            self.csv_fx_expanded = !self.csv_fx_expanded;
+                        }
+
+                        if self.csv_fx_expanded && line_count > max_lines {
+                            ui.label(
+                                RichText::new(format!("(Rullegardin: Viser {} av {} linjer - rull i feltet)", max_lines, line_count))
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(255, 215, 0))
+                                    .italics(),
+                            );
                         }
                     });
 
                     ui.add_space(3.0);
 
-                    // Skriv ut funksjonen med definert maks antall ledd på hver linje
-                    let multiline_fn = res.best_match.function.format_multiline(self.csv_terms_per_line);
-                    ui.label(
-                        RichText::new(multiline_fn)
-                            .color(theme.text_success)
-                            .monospace()
-                            .strong()
-                            .size(13.5),
-                    );
+                    if self.csv_fx_expanded {
+                        // Rullegardin / ScrollArea for f(x) utprint, begrenset til maks 6 linjer
+                        let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(18.0);
+                        let scroll_max_h = (max_lines as f32 * line_height) + 6.0;
+
+                        egui::Frame::new()
+                            .fill(theme.bg_card_alt)
+                            .stroke(theme.border_stroke)
+                            .inner_margin(6)
+                            .corner_radius(4)
+                            .show(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("csv_fx_rullegardin_scroll")
+                                    .max_height(scroll_max_h)
+                                    .auto_shrink([false, true])
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            RichText::new(&multiline_fn)
+                                                .color(theme.text_success)
+                                                .monospace()
+                                                .strong()
+                                                .size(13.5),
+                                        );
+                                    });
+                            });
+                    } else {
+                        let single_line_preview = res.best_match.function.format_expr();
+                        let truncated = if single_line_preview.len() > 80 {
+                            format!("{}...", &single_line_preview[..77])
+                        } else {
+                            single_line_preview
+                        };
+                        ui.label(
+                            RichText::new(format!("f(x) = {} ({} ledd)", truncated, res.best_match.function.terms.len()))
+                                .color(theme.text_success)
+                                .monospace()
+                                .size(12.5),
+                        );
+                    }
                 });
 
             ui.add_space(3.0);
@@ -1528,12 +1597,32 @@ impl ExtremaApp {
                                         ui.label(RichText::new(format!("{:.5}", cand.max_error)).monospace());
 
                                         let formula_text = cand.function.format_multiline(self.csv_terms_per_line);
-                                        ui.label(
-                                            RichText::new(formula_text)
-                                                .strong()
-                                                .monospace()
-                                                .color(theme.text_primary),
-                                        );
+                                        let cand_line_count = formula_text.lines().count();
+                                        let max_cand_lines = self.csv_fx_max_lines.max(1);
+
+                                        if cand_line_count > max_cand_lines {
+                                            let line_height = ui.text_style_height(&egui::TextStyle::Monospace).max(18.0);
+                                            let scroll_max_h = (max_cand_lines as f32 * line_height) + 4.0;
+                                            egui::ScrollArea::vertical()
+                                                .id_salt(format!("cand_scroll_{}", i))
+                                                .max_height(scroll_max_h)
+                                                .auto_shrink([false, true])
+                                                .show(ui, |ui| {
+                                                    ui.label(
+                                                        RichText::new(&formula_text)
+                                                            .strong()
+                                                            .monospace()
+                                                            .color(theme.text_primary),
+                                                    );
+                                                });
+                                        } else {
+                                            ui.label(
+                                                RichText::new(formula_text)
+                                                    .strong()
+                                                    .monospace()
+                                                    .color(theme.text_primary),
+                                            );
+                                        }
 
                                         if ui
                                             .button(RichText::new("⚡ Bruk").size(11.0))
