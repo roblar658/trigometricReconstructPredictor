@@ -4,7 +4,7 @@ Et høytytende beregningssystem utviklet i **Rust** som utnytter GPU (via `wgpu`
 
 Systemet består av to integrerte moduler:
 1. **Sanntids GPU-Klassifisering**: Analytisk ekstremalsøk, amplitude-kategorisering (Klasse 0–4), terskeltester og mønsteranalyse for summer av trigonometriske ledd.
-2. **Spektral Formelrekonstruksjon**: Invers Fourier-identifisering fra vilkårlige CSV-måledata med trapesintegrasjon, som gjenvinner eksakte formler og komprimerer tette harmoniske rekker tilbake til intervallnotasjon.
+2. **Spektral Formelrekonstruksjon**: Hybrid invers Fourier- og OMP-identifisering (Orthogonal Matching Pursuit) fra vilkårlige CSV-måledata med multivariat minste-kvadraters regresjon og trapesintegrasjon. Gjenvinner eksakte formler uten krysstale på både periodiske og ikke-periodiske intervaller, og komprimerer tette harmoniske rekker tilbake til intervallnotasjon.
 
 > [!IMPORTANT]
 > **Støttede funksjoner:** Programmet støtter vilkårlige lineærkombinasjoner av **KUN sinus (`sin`) og cosinus (`cos`)**. Andre matematiske funksjoner (som `tan`, `cot`, `sec`, `exp`, `log`, etc.) støttes ikke og avvises deterministisk i parsingsleddet.
@@ -121,6 +121,32 @@ i stedet for en naiv likevektet Riemann-sum.
 
 ---
 
+### Teorem 4: Orthogonal Matching Pursuit (OMP) og Multivariat Minste Kvadraters Regresjon
+
+Over et generelt målevindu $[x_{\min}, x_{\max}]$ hvor lengden $T = x_{\max} - x_{\min} \neq 2\pi m$ ($m \in \mathbb{N}$), er de trigonometriske basisfunksjonene $\{\sin(kx), \cos(kx)\}$ **ikke innbyrdes ortogonale**:
+$$\langle \sin(kx), \sin(mx) \rangle = \int_{x_{\min}}^{x_{\max}} \sin(kx)\sin(mx)\,dx \neq 0 \quad (k \neq m)$$
+
+Uavhengige 1D Fourier-projeksjoner på vilkårlige datasett medfører derfor kraftig spektral lekkasje / krysstale: et dominant ledd med høy amplitude (f.eks. $5\sin(9x)$) kaster kunstige «skygger» på nærliggende frekvenser ($k=8, 10, 1, 2$), noe som forvrenger amplitudene og skjuler reelle, men svakere harmoniske ledd.
+
+Systemet løser dette gjennom en to-faset matematisk gjenvinning:
+1. **Orthogonal Matching Pursuit (OMP) / Trinnvis residual-regresjon**:
+   I hver iterasjon velges basisfunksjonen $b_j(x)$ med høyest korrelasjon mot feil-residualet $r(x)$. Deretter trekkes det tilpassede signalet fra residualet:
+   $$r_{s+1}(x) = y(x) - \hat{y}_s(x)$$
+   Dette fjerner all krysstale og lekkasje fra dominerende ledd, slik at svakere harmoniske komponenter trer frem uten interferens.
+2. **Multivariat Minste Kvadraters Regresjon (Linear Least Squares)**:
+   For de valgte frekvensene løses det samlede normalligningssystemet:
+   $$(A^T W A) \mathbf{c} = A^T W \mathbf{y}$$
+   hvor $A_{ij} = b_j(x_i)$, $W$ er trapesvektmatrisen, og $\mathbf{c}$ er vektoren med ukjente koeffisienter. Systemet løses med Gauss-Jordan-eliminasjon, delvis pivotering og numerisk Tikhonov-regularisering ($\lambda = 10^{-10}$).
+3. **Automatisk Fysisk Nyquist-frekvensgrense**:
+   Systemet beregner datasettets Nyquist-grense $\omega_{\text{nyq}} = \frac{\pi}{\Delta x}$ og forhindrer aliasing og beregningsstøy ved høye $k$.
+
+#### Hvorfor dette teoremet er viktig:
+1. **Fullstendig kansellering av krysstale på vilkårlige domener**: Inversjon av Gram-matrisen $(A^T W A)^{-1}$ opphever all ikke-ortogonalitet mellom frekvensene. Eksakte heltalls- og brøkamplituder (f.eks. $1.0, 1.0, 1.0, 5.0$) gjenvinnes med maskinpresisjon ($R^2 = 1.0000, \text{RMSE} < 10^{-7}$), uavhengig av om målingene dekker en full $2\pi$-periode.
+2. **Ingen forringelse ved store $k$**: Før OMP førte økning av $k$ (f.eks. til 256) til at krysstalen låste fast feilaktige spøkelsesledd. Med trinnvis residual-regresjon elimineres krysstalen fullstendig, og «Maks $k$» kan trygt settes vilkårlig høyt uten kunstige øvre grenser.
+3. **Occam's Razor mot overtilpasning**: Dersom to modeller har tilnærmet identisk $R^2$ (differanse $\le 10^{-4}$), foretrekker systemet modellen med færrest ledd. Dette sikrer at støykomponenter automatisk lukes ut til fordel for den enkleste, sanne matematiske formelen.
+
+---
+
 ## 3. GPU Compute-Arkitektur (`shader.wgsl`)
 
 Beregningene akselereres parallelt på GPU via `wgpu` (Vulkan/DirectX 12).
@@ -177,10 +203,12 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1
    - **`💾 Lagre CSV (x, y)`**: Eksporterer 2000 rene $(x, y)$-datapunkter uten kommentarer.
    - **`📄 Lagre PDF`**: Genererer og åpner fullstendig analyserapport som PDF via isolert Chromium headless.
 2. **Fane 2: CSV-Datasett & Formelgjenkjenning**:
-   - Klikk **`📂 Bla gjennom etter CSV-fil...`** og velg en fil med måledata.
-   - Filen leses inn og **analyseres automatisk med én gang**.
-   - Viser beste tilpassede modell med $R^2$ og RMSE, kurveplot og kandidattabell.
-   - Klikk **`⚡ Overfør formel til funksjonsanalyse`** for å sende formelen direkte over til analysefanen.
+   - Klikk **`📂 Bla gjennom etter CSV-fil...`** og velg en fil med måledata. Filen leses inn og **analyseres automatisk med én gang**.
+   - **Maks $k$**: Juster maksimal frekvens som skal undersøkes. Det er **ingen øvre grense** på $k$ (kan settes til 256, 1000 eller mer; systemet beskytter automatisk mot aliasing via datagrensens Nyquist-frekvens).
+   - **Maks ledd/linje**: Styrer linjebrytningen ved utskrift av rekonstruerte formler slik at store funksjoner forblir lettleste og oversiktlige.
+   - **Presis kurvevisning**: Kurven plottes over hele det faktiske $x$-intervallet til CSV-filen ($[x_{\min}, x_{\max}]$), ikke bare standard $[0, 2\pi]$.
+   - **Scrollbar kandidattabell**: Tabellen støtter både horisontal og vertikal rulling, der nøkkelmetrikkene ($R^2$, RMSE og Maks feil) vises foran formelkolonnen slik at nøyaktigheten alltid er umiddelbart synlig.
+   - **⚡ Overfør formel til funksjonsanalyse**: Overfører den identifiserte formelen direkte til GPU-analysefanen og synkroniserer automatisk analyseintervallet til CSV-datasettets eksakte grenser.
 
 ### C. Kommandolinje (CLI):
 ```bash
