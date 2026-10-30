@@ -191,3 +191,16 @@ cargo run -- analyze-csv min_data.csv --pdf csv_rapport.pdf
 # Kjør alle automatiserte enhetstester
 cargo test
 ```
+
+### D. Bygge MSI-Installasjonspakke (WiX Toolset v4):
+Programmet inkluderer komplett oppsett for å generere en frittstående Windows Installer (`.msi`) med innebygd sluttbrukerlisens (EULA) og snarveier:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
+```
+Dette produserer `target/wix/TrigonometriskEkstremanalyse-Setup-v1.1.0.msi` med WiX UI-lisensdialog, startmeny- og skrivebordssnarveier.
+
+---
+
+## 5. Lisens og Sluttbrukeravtale
+* **Kildekodelisens**: Prosjektet er åpent og lisensiert under [MIT License](LICENSE).
+* **Sluttbrukeravtale (EULA)**: Se [EULA.md](EULA.md) for fullstendige vilkår og ansvarsfraskrivelse.
