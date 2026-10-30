@@ -930,28 +930,67 @@ impl ExtremaApp {
                 .inner_margin(6)
                 .corner_radius(6)
                 .show(ui, |ui| {
-                    egui::Grid::new("csv_candidates_grid").striped(true).show(ui, |ui| {
-                        ui.label(RichText::new("#").strong());
-                        ui.label(RichText::new("Kandidat-funksjon").strong());
-                        ui.label(RichText::new("R²").strong());
-                        ui.label(RichText::new("RMSE").strong());
-                        ui.label(RichText::new("Maks feil").strong());
-                        ui.end_row();
-
-                        for (i, cand) in res.top_candidates.iter().take(4).enumerate() {
-                            ui.label(format!("{}", i + 1));
-                            ui.label(
-                                RichText::new(cand.function.format_multiline(self.csv_terms_per_line))
-                                    .strong()
-                                    .monospace()
-                                    .color(theme.text_primary),
-                            );
-                            ui.label(format!("{:.4}", cand.r_squared));
-                            ui.label(format!("{:.4}", cand.rmse));
-                            ui.label(format!("{:.4}", cand.max_error));
-                            ui.end_row();
-                        }
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("📋 Kandidat-funksjoner:")
+                                .strong()
+                                .size(12.5)
+                                .color(theme.text_secondary),
+                        );
+                        ui.label(
+                            RichText::new("(R² og RMSE er alltid synlige uansett formelstørrelse)")
+                                .size(11.0)
+                                .color(theme.text_secondary),
+                        );
                     });
+                    ui.add_space(3.0);
+
+                    egui::ScrollArea::both()
+                        .max_height(170.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            egui::Grid::new("csv_candidates_grid")
+                                .striped(true)
+                                .spacing([10.0, 6.0])
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new("#").strong().color(theme.text_secondary));
+                                    ui.label(RichText::new("R²").strong().color(theme.text_success));
+                                    ui.label(RichText::new("RMSE").strong().color(theme.text_accent));
+                                    ui.label(RichText::new("Maks feil").strong().color(theme.text_secondary));
+                                    ui.label(RichText::new("Kandidat-funksjon").strong().color(theme.text_primary));
+                                    ui.label(RichText::new("Valg").strong().color(theme.text_secondary));
+                                    ui.end_row();
+
+                                    for (i, cand) in res.top_candidates.iter().enumerate() {
+                                        ui.label(RichText::new(format!("#{}", i + 1)).strong());
+                                        ui.label(
+                                            RichText::new(format!("{:.4}", cand.r_squared))
+                                                .strong()
+                                                .color(if i == 0 { theme.text_success } else { theme.text_primary }),
+                                        );
+                                        ui.label(RichText::new(format!("{:.5}", cand.rmse)).monospace());
+                                        ui.label(RichText::new(format!("{:.5}", cand.max_error)).monospace());
+
+                                        let formula_text = cand.function.format_multiline(self.csv_terms_per_line);
+                                        ui.label(
+                                            RichText::new(formula_text)
+                                                .strong()
+                                                .monospace()
+                                                .color(theme.text_primary),
+                                        );
+
+                                        if ui
+                                            .button(RichText::new("⚡ Bruk").size(11.0))
+                                            .on_hover_text("Bruk denne kandidaten i funksjonsanalysen")
+                                            .clicked()
+                                        {
+                                            transfer_to_classifier = Some(cand.function.format_expr());
+                                        }
+
+                                        ui.end_row();
+                                    }
+                                });
+                        });
                 });
         }
 

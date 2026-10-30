@@ -399,7 +399,7 @@ pub fn identify_function_from_data(
         .cloned()
         .ok_or_else(|| "Ingen kandidater evaluert".to_string())?;
 
-    let top_candidates = evaluated_candidates.into_iter().take(5).collect();
+    let top_candidates = evaluated_candidates.into_iter().take(8).collect();
 
     Ok(IdentificationResult {
         best_match,
