@@ -914,10 +914,12 @@ impl ExtremaApp {
                     );
 
                     let func = &res.best_match.function;
-                    let num_curve_pts = 400;
+                    let num_curve_pts = 600;
                     let mut curve = Vec::with_capacity(num_curve_pts);
+                    let (x_start, x_end) = res.x_range;
+                    let span = if x_end > x_start { x_end - x_start } else { TAU };
                     for i in 0..num_curve_pts {
-                        let x = (i as f64 / (num_curve_pts - 1) as f64) * TAU;
+                        let x = x_start + (i as f64 / (num_curve_pts - 1) as f64) * span;
                         curve.push([x, func.eval(x)]);
                     }
                     plot_ui.line(
@@ -1001,6 +1003,10 @@ impl ExtremaApp {
 
         if let Some(formula) = transfer_to_classifier {
             self.formula_input = formula;
+            if let Some(res) = &self.csv_result {
+                self.x_min = res.x_range.0;
+                self.x_max = res.x_range.1;
+            }
             self.tab = ActiveTab::Classifier;
             self.run_gpu_analysis();
         }

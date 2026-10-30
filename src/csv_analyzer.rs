@@ -199,7 +199,112 @@ fn snap_amplitude(amp: f64) -> f64 {
     if (amp - r_half).abs() < 0.08 {
         return r_half;
     }
+    let r_quarter = (amp * 4.0).round() / 4.0;
+    if (amp - r_quarter).abs() < 0.05 {
+        return r_quarter;
+    }
     (amp * 100.0).round() / 100.0
+}
+
+/// Løser lineært minste kvadraters problem (A^T W A) c = A^T W y ved hjelp av
+/// Gauss-eliminasjon med delvis pivotering og Tikhonov-regularisering for stabilitet.
+fn solve_least_squares(a_cols: &[Vec<f64>], y: &[f64], weights: Option<&[f64]>) -> Option<Vec<f64>> {
+    let m = a_cols.len();
+    if m == 0 {
+        return Some(Vec::new());
+    }
+    let n = y.len();
+
+    let mut ata = vec![vec![0.0; m]; m];
+    let mut aty = vec![0.0; m];
+
+    if let Some(w) = weights {
+        for i in 0..m {
+            for j in i..m {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += a_cols[i][k] * a_cols[j][k] * w[k];
+                }
+                ata[i][j] = sum;
+                ata[j][i] = sum;
+            }
+            let mut sum_y = 0.0;
+            for k in 0..n {
+                sum_y += a_cols[i][k] * y[k] * w[k];
+            }
+            aty[i] = sum_y;
+        }
+    } else {
+        for i in 0..m {
+            for j in i..m {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += a_cols[i][k] * a_cols[j][k];
+                }
+                ata[i][j] = sum;
+                ata[j][i] = sum;
+            }
+            let mut sum_y = 0.0;
+            for k in 0..n {
+                sum_y += a_cols[i][k] * y[k];
+            }
+            aty[i] = sum_y;
+        }
+    }
+
+    // Tikhonov-regularisering for å hindre singularitet ved multikolinearitet
+    let avg_diag: f64 = (0..m).map(|i| ata[i][i]).sum::<f64>() / m as f64;
+    let lambda = 1e-10 * avg_diag.max(1e-6);
+    for i in 0..m {
+        ata[i][i] += lambda;
+    }
+
+    // Utvidet matrise [A | b]
+    let mut mat = vec![vec![0.0; m + 1]; m];
+    for i in 0..m {
+        for j in 0..m {
+            mat[i][j] = ata[i][j];
+        }
+        mat[i][m] = aty[i];
+    }
+
+    // Gauss-Jordan eliminering med pivotering
+    for i in 0..m {
+        let mut max_val = mat[i][i].abs();
+        let mut max_row = i;
+        for k in (i + 1)..m {
+            let val = mat[k][i].abs();
+            if val > max_val {
+                max_val = val;
+                max_row = k;
+            }
+        }
+        if max_val < 1e-12 {
+            return None;
+        }
+        if max_row != i {
+            mat.swap(i, max_row);
+        }
+
+        let pivot = mat[i][i];
+        for j in i..=m {
+            mat[i][j] /= pivot;
+        }
+
+        for k in 0..m {
+            if k != i {
+                let factor = mat[k][i];
+                if factor.abs() > 1e-14 {
+                    for j in i..=m {
+                        mat[k][j] -= factor * mat[i][j];
+                    }
+                }
+            }
+        }
+    }
+
+    let coeffs: Vec<f64> = (0..m).map(|i| mat[i][m]).collect();
+    Some(coeffs)
 }
 
 /// Analyserer data og identifiserer hvilken trigonometrisk funksjon (sin/cos) det er
@@ -248,9 +353,153 @@ pub fn identify_function_from_data(
         weights.push(1.0);
     }
 
-    // 1. Beregn Fourier-projeksjoner for både sinus og cosinus for k = 1..=max_n
+    let x_vec: Vec<f64> = sorted_data.iter().map(|p| p.x).collect();
+    let y_vec: Vec<f64> = sorted_data.iter().map(|p| p.y).collect();
+
+    // Beregn fysisk Nyquist-frekvensgrense: omega_nyq = pi / dx
+    let avg_dx = if n > 1 {
+        (max_x - min_x) / (n - 1) as f64
+    } else {
+        1.0
+    };
+    let nyquist_k = if avg_dx > 1e-7 {
+        (std::f64::consts::PI / avg_dx).floor() as u32
+    } else {
+        max_n
+    };
+    let effective_max_n = max_n.min(nyquist_k.max(10));
+
+    let mut candidate_functions = Vec::new();
+
+    // -------------------------------------------------------------
+    // METODE 1: Orthogonal Matching Pursuit (OMP) / Trinnvis residual-regresjon
+    // Fjerner kryss-korrelasjon og sidelober for vilkårlige ikke-periodiske intervaller.
+    // -------------------------------------------------------------
+    let mut residual = y_vec.clone();
+    let mut selected_terms: Vec<(TrigKind, u32)> = Vec::new();
+    let mut selected_cols: Vec<Vec<f64>> = Vec::new();
+    let max_omp_steps = 20.min(n / 3);
+
+    for _step in 0..max_omp_steps {
+        let mut best_score = -1.0;
+        let mut best_term = (TrigKind::Sin, 1);
+
+        for k in 1..=effective_max_n {
+            for &kind in &[TrigKind::Sin, TrigKind::Cos] {
+                if selected_terms.contains(&(kind, k)) {
+                    continue;
+                }
+
+                let mut dot = 0.0;
+                let mut norm_sq = 0.0;
+                for (&x, (&r, &w)) in x_vec.iter().zip(residual.iter().zip(&weights)) {
+                    let angle = k as f64 * x;
+                    let val = match kind {
+                        TrigKind::Sin => angle.sin(),
+                        TrigKind::Cos => angle.cos(),
+                    };
+                    dot += w * r * val;
+                    norm_sq += w * val * val;
+                }
+
+                let norm = norm_sq.sqrt();
+                let score = if norm > 1e-9 { dot.abs() / norm } else { 0.0 };
+                if score > best_score {
+                    best_score = score;
+                    best_term = (kind, k);
+                }
+            }
+        }
+
+        // Hvis ingen korrelasjon av betydning gjenstår i residualet, stopp
+        if best_score < 0.04 {
+            break;
+        }
+
+        let winning_col: Vec<f64> = x_vec.iter().map(|&x| {
+            let angle = best_term.1 as f64 * x;
+            match best_term.0 {
+                TrigKind::Sin => angle.sin(),
+                TrigKind::Cos => angle.cos(),
+            }
+        }).collect();
+
+        selected_terms.push(best_term);
+        selected_cols.push(winning_col);
+
+        // Løs felles minste kvadraters tilpasning for alle hittil valgte ledd
+        if let Some(coeffs) = solve_least_squares(&selected_cols, &y_vec, Some(&weights)) {
+            let mut cur_rss = 0.0;
+            for i in 0..n {
+                let mut pred = 0.0;
+                for j in 0..selected_terms.len() {
+                    pred += coeffs[j] * selected_cols[j][i];
+                }
+                let err = y_vec[i] - pred;
+                residual[i] = err;
+                cur_rss += err * err;
+            }
+
+            let cur_rmse = (cur_rss / n_pts).sqrt();
+
+            // Kandidat 1: Avrundede / snappede heltall- og brøkamplituder
+            let snapped_terms: Vec<TrigTerm> = selected_terms
+                .iter()
+                .zip(&coeffs)
+                .filter_map(|(&(kind, freq), &c)| {
+                    let s = snap_amplitude(c);
+                    if s.abs() > 1e-4 {
+                        Some(TrigTerm::new(kind, freq, s))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !snapped_terms.is_empty() {
+                candidate_functions.push(TrigFunction::new(snapped_terms));
+            }
+
+            // Kandidat 2: Nøyaktige tilpassede regresjonskoeffisienter
+            let fitted_terms: Vec<TrigTerm> = selected_terms
+                .iter()
+                .zip(&coeffs)
+                .filter_map(|(&(kind, freq), &c)| {
+                    let rounded = (c * 1000.0).round() / 1000.0;
+                    if rounded.abs() > 1e-4 {
+                        Some(TrigTerm::new(kind, freq, rounded))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !fitted_terms.is_empty() {
+                candidate_functions.push(TrigFunction::new(fitted_terms));
+            }
+
+            // Kandidat 3: Enhetsamplituder (±1.0)
+            let unit_terms: Vec<TrigTerm> = selected_terms
+                .iter()
+                .zip(&coeffs)
+                .map(|(&(kind, freq), &c)| {
+                    TrigTerm::new(kind, freq, if c < 0.0 { -1.0 } else { 1.0 })
+                })
+                .collect();
+            candidate_functions.push(TrigFunction::new(unit_terms));
+
+            // Hvis feilen allerede er tilnærmet maskinpresisjon, er funksjonen funnet
+            if cur_rmse < 1e-5 {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // -------------------------------------------------------------
+    // METODE 2: Fullspektret Fourier-projeksjon (for tette spektre, intervaller [[a..b]])
+    // -------------------------------------------------------------
     let mut harmonic_spectrum: Vec<(TrigKind, u32, f64)> = Vec::new();
-    for k in 1..=max_n {
+    for k in 1..=effective_max_n {
         let mut sum_proj_sin = 0.0;
         let mut sum_denom_sin = 0.0;
         let mut sum_proj_cos = 0.0;
@@ -275,82 +524,57 @@ pub fn identify_function_from_data(
         harmonic_spectrum.push((TrigKind::Cos, k, amp_cos));
     }
 
-    // 2. Finn de mest signifikante komponentene (amplitude >= 0.15)
     let mut significant_components: Vec<(TrigKind, u32, f64)> = harmonic_spectrum
         .iter()
         .filter(|(_, _, amp)| amp.abs() >= 0.15)
         .copied()
         .collect();
 
-    // Sorter etter amplitude synkende
     significant_components.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
 
-    if significant_components.is_empty() {
-        let mut all_freqs = harmonic_spectrum.clone();
-        all_freqs.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
-        for item in all_freqs.into_iter().take(3) {
-            if item.2.abs() > 1e-4 {
-                significant_components.push(item);
+    if !significant_components.is_empty() {
+        // Alle signifikante ledd (essensielt for intervalluttrykk som [[4, 3cos(x), 100]])
+        let fourier_all: Vec<TrigTerm> = significant_components
+            .iter()
+            .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
+            .collect();
+        candidate_functions.push(TrigFunction::new(fourier_all));
+
+        // Subsett 1..=5
+        let top_n = significant_components.len().min(5);
+        for count in 1..=top_n {
+            let subset_fitted: Vec<TrigTerm> = significant_components[..count]
+                .iter()
+                .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
+                .collect();
+            candidate_functions.push(TrigFunction::new(subset_fitted));
+        }
+
+        // Felles regresjon på komponenter dersom antallet er håndterbart
+        if significant_components.len() >= 2 && significant_components.len() <= 40 {
+            let comp_cols: Vec<Vec<f64>> = significant_components.iter().map(|&(kind, f, _)| {
+                x_vec.iter().map(|&x| match kind {
+                    TrigKind::Sin => (f as f64 * x).sin(),
+                    TrigKind::Cos => (f as f64 * x).cos(),
+                }).collect()
+            }).collect();
+
+            if let Some(c_fit) = solve_least_squares(&comp_cols, &y_vec, Some(&weights)) {
+                let re_fitted: Vec<TrigTerm> = significant_components.iter().zip(&c_fit)
+                    .filter_map(|(&(kind, f, _), &c)| {
+                        let s = snap_amplitude(c);
+                        if s.abs() > 1e-4 { Some(TrigTerm::new(kind, f, s)) } else { None }
+                    })
+                    .collect();
+                if !re_fitted.is_empty() {
+                    candidate_functions.push(TrigFunction::new(re_fitted));
+                }
             }
         }
     }
 
-    // 3. Generer kandidat-funksjoner fra de signifikante komponentene
-    let mut candidate_functions = Vec::new();
-
-    // Kandidat A: Komponenter med tilpassede konstanter
-    if !significant_components.is_empty() {
-        let fitted_terms: Vec<TrigTerm> = significant_components
-            .iter()
-            .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
-            .collect();
-        candidate_functions.push(TrigFunction::new(fitted_terms));
-
-        // Enhet-amplituder (±1.0)
-        let unit_terms: Vec<TrigTerm> = significant_components
-            .iter()
-            .map(|&(kind, f, amp)| {
-                let sign = if amp < 0.0 { -1.0 } else { 1.0 };
-                TrigTerm::new(kind, f, sign)
-            })
-            .collect();
-        candidate_functions.push(TrigFunction::new(unit_terms));
-    }
-
-    // Kandidat B: Subsett av de 1, 2, 3 eller 4 mest signifikante med tilpasset amplitude
-    let top_n = significant_components.len().min(5);
-    for count in 1..=top_n {
-        let subset_fitted: Vec<TrigTerm> = significant_components[..count]
-            .iter()
-            .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
-            .collect();
-        candidate_functions.push(TrigFunction::new(subset_fitted));
-
-        let subset_unit: Vec<TrigTerm> = significant_components[..count]
-            .iter()
-            .map(|&(kind, f, amp)| {
-                let sign = if amp < 0.0 { -1.0 } else { 1.0 };
-                TrigTerm::new(kind, f, sign)
-            })
-            .collect();
-        candidate_functions.push(TrigFunction::new(subset_unit));
-    }
-
-    // Kandidat C: Par-kombinasjoner
-    let pool: Vec<(TrigKind, u32, f64)> = significant_components.iter().take(6).copied().collect();
-    for i in 0..pool.len() {
-        for j in (i + 1)..pool.len() {
-            let t1_fit = TrigTerm::new(pool[i].0, pool[i].1, snap_amplitude(pool[i].2));
-            let t2_fit = TrigTerm::new(pool[j].0, pool[j].1, snap_amplitude(pool[j].2));
-            candidate_functions.push(TrigFunction::new(vec![t1_fit, t2_fit]));
-
-            let t1_unit = TrigTerm::new(pool[i].0, pool[i].1, if pool[i].2 < 0.0 { -1.0 } else { 1.0 });
-            let t2_unit = TrigTerm::new(pool[j].0, pool[j].1, if pool[j].2 < 0.0 { -1.0 } else { 1.0 });
-            candidate_functions.push(TrigFunction::new(vec![t1_unit, t2_unit]));
-        }
-    }
-
-    // Fjern duplikate kandidatfunksjoner
+    // Fjern tomme eller duplikate kandidatfunksjoner
+    candidate_functions.retain(|f| !f.terms.is_empty());
     candidate_functions.sort_by_key(|f| format!("{}", f));
     candidate_functions.dedup();
 
@@ -386,12 +610,19 @@ pub fn identify_function_from_data(
         });
     }
 
-    // Sorter kandidater etter høyest R² og lavest RMSE
+    // Sorter kandidater:
+    // 1. Primært: Høyeste R²
+    // 2. Sekundært: Ved lik R² (forskjell <= 0.0001), velg færrest ledd (Occam's razor mot overtilpasning)
+    // 3. Tertiært: Lavest RMSE og maks feil
     evaluated_candidates.sort_by(|a, b| {
-        b.r_squared
-            .partial_cmp(&a.r_squared)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.rmse.partial_cmp(&b.rmse).unwrap_or(std::cmp::Ordering::Equal))
+        let r2_diff = b.r_squared - a.r_squared;
+        if r2_diff.abs() > 1e-4 {
+            b.r_squared.partial_cmp(&a.r_squared).unwrap_or(std::cmp::Ordering::Equal)
+        } else {
+            a.function.terms.len().cmp(&b.function.terms.len())
+                .then_with(|| a.rmse.partial_cmp(&b.rmse).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.max_error.partial_cmp(&b.max_error).unwrap_or(std::cmp::Ordering::Equal))
+        }
     });
 
     let best_match = evaluated_candidates
@@ -399,7 +630,19 @@ pub fn identify_function_from_data(
         .cloned()
         .ok_or_else(|| "Ingen kandidater evaluert".to_string())?;
 
-    let top_candidates = evaluated_candidates.into_iter().take(8).collect();
+    // Unike toppkandidater (dedupliser etter streng-representasjon)
+    let mut top_candidates: Vec<IdentificationCandidate> = Vec::new();
+    let mut seen_exprs = std::collections::HashSet::new();
+
+    for cand in evaluated_candidates {
+        let expr = format!("{}", cand.function);
+        if seen_exprs.insert(expr) {
+            top_candidates.push(cand);
+            if top_candidates.len() >= 8 {
+                break;
+            }
+        }
+    }
 
     Ok(IdentificationResult {
         best_match,
@@ -410,7 +653,6 @@ pub fn identify_function_from_data(
     })
 }
 
-/// Genererer syntetiske datapunkter (x, y) for en gitt trigonometrisk funksjon
 pub fn generate_synthetic_data(
     func: &TrigFunction,
     x_min: f64,
@@ -573,5 +815,14 @@ Indeks,Type,x_rad,x_deg,f_x,Klasse,Klasse_Beskrivelse
         let res = identify_function_from_data(&data, 105).unwrap();
         println!("Best match: {}, R2: {}, RMSE: {}, terms: {}", res.best_match.function, res.best_match.r_squared, res.best_match.rmse, res.best_match.function.terms.len());
         assert!(res.best_match.r_squared > 0.95);
+    }
+    #[test]
+    fn test_identification_tektket_dataset() {
+        let pts = read_csv_data("tektket.csv").expect("Kunne ikke lese tektket.csv");
+        let res = identify_function_from_data(&pts, 256).expect("Kunne ikke identifisere tektket");
+        println!("Tektket funnet: {}, R2: {}, RMSE: {}", res.best_match.function, res.best_match.r_squared, res.best_match.rmse);
+        assert!(res.best_match.r_squared > 0.9999);
+        assert!(res.best_match.rmse < 1e-4);
+        assert_eq!(res.best_match.function.terms.len(), 4);
     }
 }
