@@ -1,3 +1,6 @@
+<?ifndef ExeSource ?>
+  <?define ExeSource = "target\release\gpu_extrema_classifier.exe" ?>
+<?endif ?>
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="Trigonometrisk Ekstremanalyse &amp; Rekonstruksjon"
@@ -29,7 +32,7 @@
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       <Component Id="MainExecutable" Guid="3F8B7D21-5A6C-4B7E-9012-A1B2C3D4E5F6">
-        <File Id="AppExe" Source="target\debug\gpu_extrema_classifier.exe" KeyPath="yes">
+        <File Id="AppExe" Source="$(var.ExeSource)" KeyPath="yes">
           <Shortcut Id="StartMenuShortcut"
                     Directory="ApplicationProgramsFolder"
                     Name="Trigonometrisk Ekstremanalyse"
