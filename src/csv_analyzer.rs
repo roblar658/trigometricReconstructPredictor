@@ -194,32 +194,33 @@ fn snap_amplitude(amp: f64) -> f64 {
     if amp.abs() < 1e-9 {
         return 0.0;
     }
-    // For små amplituder (f.eks. lydsignaler med amp < 0.35), ikke avrund til 0!
-    if amp.abs() < 0.35 {
+    // For små amplituder (f.eks. mikro-ledd og lydspekter med amp < 0.25):
+    if amp.abs() < 0.25 {
         let r_tenth = (amp * 10.0).round() / 10.0;
-        if (amp - r_tenth).abs() < 0.015 && r_tenth.abs() > 1e-6 {
+        if (amp - r_tenth).abs() < 0.008 && r_tenth.abs() > 1e-6 {
             return r_tenth;
         }
         let r_hundredth = (amp * 100.0).round() / 100.0;
-        if (amp - r_hundredth).abs() < 0.005 && r_hundredth.abs() > 1e-6 {
+        if (amp - r_hundredth).abs() < 0.003 && r_hundredth.abs() > 1e-6 {
             return r_hundredth;
         }
         return (amp * 10_000.0).round() / 10_000.0;
     }
 
+    // For større amplituder (stramme toleranser for å bevare R² og presise topper):
     let r_int = amp.round();
-    if (amp - r_int).abs() < 0.12 {
+    if (amp - r_int).abs() < 0.03 {
         return r_int;
     }
     let r_half = (amp * 2.0).round() / 2.0;
-    if (amp - r_half).abs() < 0.08 {
+    if (amp - r_half).abs() < 0.015 {
         return r_half;
     }
     let r_quarter = (amp * 4.0).round() / 4.0;
-    if (amp - r_quarter).abs() < 0.05 {
+    if (amp - r_quarter).abs() < 0.008 {
         return r_quarter;
     }
-    (amp * 100.0).round() / 100.0
+    (amp * 10_000.0).round() / 10_000.0
 }
 
 /// Løser lineært minste kvadraters problem (A^T W A) c = A^T W y ved hjelp av
@@ -385,146 +386,18 @@ pub fn identify_function_from_data(
     };
     let effective_max_n = max_n.min(nyquist_k.max(10));
 
-    let mut candidate_functions = Vec::new();
-
-    // -------------------------------------------------------------
-    // METODE 1: Orthogonal Matching Pursuit (OMP) / Trinnvis residual-regresjon
-    // Fjerner kryss-korrelasjon og sidelober for vilkårlige ikke-periodiske intervaller.
-    // -------------------------------------------------------------
-    let mut residual = y_vec.clone();
-    let mut selected_terms: Vec<(TrigKind, u32)> = Vec::new();
-    let mut selected_cols: Vec<Vec<f64>> = Vec::new();
-    let max_omp_steps = 25.min(n / 3);
-
-    for _step in 0..max_omp_steps {
-        // Beregn residualets vektede norm for skalerings-uavhengig Pearson-korrelasjon
-        let mut r_norm_sq = 0.0;
-        for (&r, &w) in residual.iter().zip(&weights) {
-            r_norm_sq += w * r * r;
-        }
-        let r_norm = r_norm_sq.sqrt();
-        if r_norm < 1e-7 {
-            break;
-        }
-
-        let mut best_score = -1.0;
-        let mut best_term = (TrigKind::Sin, 1);
-
-        for k in 1..=effective_max_n {
-            for &kind in &[TrigKind::Sin, TrigKind::Cos] {
-                if selected_terms.contains(&(kind, k)) {
-                    continue;
-                }
-
-                let mut dot = 0.0;
-                let mut norm_sq = 0.0;
-                for (&x, (&r, &w)) in x_vec.iter().zip(residual.iter().zip(&weights)) {
-                    let angle = k as f64 * x;
-                    let val = match kind {
-                        TrigKind::Sin => angle.sin(),
-                        TrigKind::Cos => angle.cos(),
-                    };
-                    dot += w * r * val;
-                    norm_sq += w * val * val;
-                }
-
-                let norm = norm_sq.sqrt();
-                let score = if norm > 1e-9 { dot.abs() / (r_norm * norm) } else { 0.0 };
-                if score > best_score {
-                    best_score = score;
-                    best_term = (kind, k);
-                }
-            }
-        }
-
-        // Stopp kun dersom korrelasjonen er neglisjerbar (< 1% korrelert med feilen)
-        if best_score < 0.01 {
-            break;
-        }
-
-        let winning_col: Vec<f64> = x_vec.iter().map(|&x| {
-            let angle = best_term.1 as f64 * x;
-            match best_term.0 {
-                TrigKind::Sin => angle.sin(),
-                TrigKind::Cos => angle.cos(),
-            }
-        }).collect();
-
-        selected_terms.push(best_term);
-        selected_cols.push(winning_col);
-
-        // Løs felles minste kvadraters tilpasning for alle hittil valgte ledd
-        if let Some(coeffs) = solve_least_squares(&selected_cols, &y_vec, Some(&weights)) {
-            let mut cur_rss = 0.0;
-            for i in 0..n {
-                let mut pred = 0.0;
-                for j in 0..selected_terms.len() {
-                    pred += coeffs[j] * selected_cols[j][i];
-                }
-                let err = y_vec[i] - pred;
-                residual[i] = err;
-                cur_rss += err * err;
-            }
-
-            let cur_rmse = (cur_rss / n_pts).sqrt();
-
-            // Kandidat 1: Avrundede / snappede heltall- og brøkamplituder
-            let snapped_terms: Vec<TrigTerm> = selected_terms
-                .iter()
-                .zip(&coeffs)
-                .filter_map(|(&(kind, freq), &c)| {
-                    let s = snap_amplitude(c);
-                    if s.abs() > 1e-6 {
-                        Some(TrigTerm::new(kind, freq, s))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !snapped_terms.is_empty() {
-                candidate_functions.push(TrigFunction::new(snapped_terms));
-            }
-
-            // Kandidat 2: Nøyaktige tilpassede regresjonskoeffisienter (bevarer mikro-amplituder)
-            let fitted_terms: Vec<TrigTerm> = selected_terms
-                .iter()
-                .zip(&coeffs)
-                .filter_map(|(&(kind, freq), &c)| {
-                    let rounded = (c * 10_000.0).round() / 10_000.0;
-                    if rounded.abs() > 1e-6 {
-                        Some(TrigTerm::new(kind, freq, rounded))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !fitted_terms.is_empty() {
-                candidate_functions.push(TrigFunction::new(fitted_terms));
-            }
-
-            // Kandidat 3: Enhetsamplituder (±1.0)
-            let unit_terms: Vec<TrigTerm> = selected_terms
-                .iter()
-                .zip(&coeffs)
-                .map(|(&(kind, freq), &c)| {
-                    TrigTerm::new(kind, freq, if c < 0.0 { -1.0 } else { 1.0 })
-                })
-                .collect();
-            candidate_functions.push(TrigFunction::new(unit_terms));
-
-            // Hvis feilen allerede er tilnærmet maskinpresisjon, er funksjonen funnet
-            if cur_rmse < 1e-5 {
-                break;
-            }
-        } else {
-            break;
-        }
+    // Beregn Fourier-projeksjoner og fase-uavhengig spektral effekt for sinus og cosinus
+    struct FreqEnergy {
+        freq: u32,
+        amp_sin: f64,
+        amp_cos: f64,
+        power: f64,
     }
 
-    // -------------------------------------------------------------
-    // METODE 2: Fullspektret Fourier-projeksjon (for tette spektre, intervaller [[a..b]])
-    // -------------------------------------------------------------
-    let mut harmonic_spectrum: Vec<(TrigKind, u32, f64)> = Vec::new();
+    let mut spectrum: Vec<FreqEnergy> = Vec::with_capacity(effective_max_n as usize);
+    let mut total_spectral_power = 0.0f64;
+    let mut max_spectral_power = 0.0f64;
+
     for k in 1..=effective_max_n {
         let mut sum_proj_sin = 0.0;
         let mut sum_denom_sin = 0.0;
@@ -543,16 +416,277 @@ pub fn identify_function_from_data(
             sum_denom_cos += w * c * c;
         }
 
-        let amp_sin = if sum_denom_sin > 1e-6 { sum_proj_sin / sum_denom_sin } else { 0.0 };
-        let amp_cos = if sum_denom_cos > 1e-6 { sum_proj_cos / sum_denom_cos } else { 0.0 };
+        let amp_sin = if sum_denom_sin > 1e-9 { sum_proj_sin / sum_denom_sin } else { 0.0 };
+        let amp_cos = if sum_denom_cos > 1e-9 { sum_proj_cos / sum_denom_cos } else { 0.0 };
+        let power = amp_sin * amp_sin * sum_denom_sin + amp_cos * amp_cos * sum_denom_cos;
 
-        harmonic_spectrum.push((TrigKind::Sin, k, amp_sin));
-        harmonic_spectrum.push((TrigKind::Cos, k, amp_cos));
+        if power > max_spectral_power {
+            max_spectral_power = power;
+        }
+        total_spectral_power += power;
+
+        spectrum.push(FreqEnergy {
+            freq: k,
+            amp_sin,
+            amp_cos,
+            power,
+        });
     }
 
-    // Adaptiv terskel basert på maksimal frekvenskomponent i spekteret (skalerer riktig selv for 100 ledd og små amplituder)
+    // Identifiser dype spisser og skarpe ekstrema i signalet for spissvekting (Weighted Least Squares)
+    let max_dev = sorted_data.iter().map(|p| (p.y - mean_y).abs()).fold(0.0f64, f64::max);
+    let std_dev = (tss / n_pts).sqrt();
+    let spike_weights: Option<Vec<f64>> = if max_dev > 1.25 * std_dev && max_dev > 1e-5 {
+        let mut sw = Vec::with_capacity(n);
+        for (p, &w) in sorted_data.iter().zip(&weights) {
+            let dev = (p.y - mean_y).abs();
+            let ratio = dev / max_dev;
+            // Øk vektingen kraftig på de dypeste spissene/toppene slik at de ikke avrundes eller flates ut
+            let boost = 1.0 + 4.0 * ratio.powi(2);
+            sw.push(w * boost);
+        }
+        Some(sw)
+    } else {
+        None
+    };
+
+    let mut candidate_functions = Vec::new();
+
+    // -------------------------------------------------------------
+    // METODE 1: Harmonisk klangidentifisering (Tonedeteksjon for tale, vokaler & periodiske funksjoner)
+    // Finner den underliggende grunnfrekvensen F0 og tilpasser alle signifikante harmoniske overtoner
+    // -------------------------------------------------------------
+    if effective_max_n >= 2 && max_spectral_power > 1e-9 {
+        let max_search_f0 = 600u32.min(effective_max_n / 2).max(1);
+        let mut best_f0 = 1u32;
+        let mut best_f0_score = -1.0f64;
+
+        for f0 in 1..=max_search_f0 {
+            let mut score = 0.0;
+            let mut h = 1;
+            while h * f0 <= effective_max_n {
+                let idx = (h * f0 - 1) as usize;
+                score += spectrum[idx].power;
+                h += 1;
+            }
+            if score > best_f0_score {
+                best_f0_score = score;
+                best_f0 = f0;
+            }
+        }
+
+        // Subharmonisk disambiguering (f.eks. sjekk om 2*F0 eller 3*F0 har nesten identisk energi)
+        for mult in [2, 3] {
+            let cand = best_f0 * mult;
+            if cand <= max_search_f0 {
+                let mut cand_score = 0.0;
+                let mut h = 1;
+                while h * cand <= effective_max_n {
+                    let idx = (h * cand - 1) as usize;
+                    cand_score += spectrum[idx].power;
+                    h += 1;
+                }
+                if cand_score > 0.85 * best_f0_score {
+                    best_f0 = cand;
+                    best_f0_score = cand_score;
+                    break;
+                }
+            }
+        }
+
+        // Hvis den harmoniske strukturen forklarer en vesentlig del av spekteret:
+        if best_f0_score > 0.25 * total_spectral_power {
+            let p_thresh = (max_spectral_power * 1e-4).max(1e-9);
+            let mut harm_terms: Vec<(TrigKind, u32)> = Vec::new();
+            let mut h = 1;
+            while h * best_f0 <= effective_max_n && harm_terms.len() < 120 {
+                let f = h * best_f0;
+                let idx = (f - 1) as usize;
+                let item = &spectrum[idx];
+                if item.power >= p_thresh {
+                    if item.amp_sin.abs() > 1e-6 {
+                        harm_terms.push((TrigKind::Sin, f));
+                    }
+                    if item.amp_cos.abs() > 1e-6 {
+                        harm_terms.push((TrigKind::Cos, f));
+                    }
+                }
+                h += 1;
+            }
+
+            if !harm_terms.is_empty() {
+                let harm_cols: Vec<Vec<f64>> = harm_terms.iter().map(|&(kind, f)| {
+                    x_vec.iter().map(|&x| match kind {
+                        TrigKind::Sin => (f as f64 * x).sin(),
+                        TrigKind::Cos => (f as f64 * x).cos(),
+                    }).collect()
+                }).collect();
+
+                // 1A. Standard regresjon
+                if let Some(coeffs) = solve_least_squares(&harm_cols, &y_vec, Some(&weights)) {
+                    // Eksakt tilpasning (maksimal R²)
+                    let exact_terms: Vec<TrigTerm> = harm_terms.iter().zip(&coeffs)
+                        .filter_map(|(&(kind, f), &c)| {
+                            let rounded = (c * 10_000.0).round() / 10_000.0;
+                            if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
+                        })
+                        .collect();
+                    if !exact_terms.is_empty() {
+                        candidate_functions.push(TrigFunction::new(exact_terms));
+                    }
+
+                    // Snappet tilpasning
+                    let snapped_terms: Vec<TrigTerm> = harm_terms.iter().zip(&coeffs)
+                        .filter_map(|(&(kind, f), &c)| {
+                            let s = snap_amplitude(c);
+                            if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
+                        })
+                        .collect();
+                    if !snapped_terms.is_empty() {
+                        candidate_functions.push(TrigFunction::new(snapped_terms));
+                    }
+                }
+
+                // 1B. Spiss-vektet regresjon (for dype spisser i periodiske signaler)
+                if let Some(ref sw) = spike_weights {
+                    if let Some(spk_coeffs) = solve_least_squares(&harm_cols, &y_vec, Some(sw)) {
+                        let spk_terms: Vec<TrigTerm> = harm_terms.iter().zip(&spk_coeffs)
+                            .filter_map(|(&(kind, f), &c)| {
+                                let rounded = (c * 10_000.0).round() / 10_000.0;
+                                if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
+                            })
+                            .collect();
+                        if !spk_terms.is_empty() {
+                            candidate_functions.push(TrigFunction::new(spk_terms));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------
+    // METODE 2: Spektral Topp-Deteksjon med Non-Maximum Suppression (NMS)
+    // Finner reelle frekvenstopper uten å la seg lure av vinduslekkasje/sidelober
+    // -------------------------------------------------------------
+    let rayleigh_width = ((std::f64::consts::TAU / (max_x - min_x).max(1e-4)).round() as u32).max(1);
+    let mut local_peaks: Vec<(u32, f64)> = Vec::new();
+
+    for i in 0..spectrum.len() {
+        let p_curr = spectrum[i].power;
+        if p_curr < 1e-5 * max_spectral_power {
+            continue;
+        }
+        let p_prev = if i > 0 { spectrum[i - 1].power } else { 0.0 };
+        let p_next = if i + 1 < spectrum.len() { spectrum[i + 1].power } else { 0.0 };
+
+        if p_curr >= p_prev && p_curr >= p_next {
+            local_peaks.push((spectrum[i].freq, p_curr));
+        }
+    }
+
+    // Sorter etter effekt og filtrer ut sidelober (NMS)
+    local_peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut nms_peaks: Vec<u32> = Vec::new();
+    for &(f, _) in &local_peaks {
+        if !nms_peaks.iter().any(|&pf| (pf as i64 - f as i64).abs() <= rayleigh_width as i64) {
+            nms_peaks.push(f);
+            if nms_peaks.len() >= 60 {
+                break;
+            }
+        }
+    }
+
+    // Bygg kandidater fra de sterkeste NMS-toppene
+    if !nms_peaks.is_empty() {
+        let mut peak_terms: Vec<(TrigKind, u32)> = Vec::new();
+        for &f in &nms_peaks {
+            let item = &spectrum[(f - 1) as usize];
+            if item.amp_sin.abs() > 1e-5 {
+                peak_terms.push((TrigKind::Sin, f));
+            }
+            if item.amp_cos.abs() > 1e-5 {
+                peak_terms.push((TrigKind::Cos, f));
+            }
+        }
+
+        if !peak_terms.is_empty() {
+            let peak_cols: Vec<Vec<f64>> = peak_terms.iter().map(|&(kind, f)| {
+                x_vec.iter().map(|&x| match kind {
+                    TrigKind::Sin => (f as f64 * x).sin(),
+                    TrigKind::Cos => (f as f64 * x).cos(),
+                }).collect()
+            }).collect();
+
+            // 2A. Standard regresjon på NMS-topper
+            if let Some(c_fit) = solve_least_squares(&peak_cols, &y_vec, Some(&weights)) {
+                let exact_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&c_fit)
+                    .filter_map(|(&(kind, f), &c)| {
+                        let rounded = (c * 10_000.0).round() / 10_000.0;
+                        if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
+                    })
+                    .collect();
+                if !exact_peaks.is_empty() {
+                    candidate_functions.push(TrigFunction::new(exact_peaks));
+                }
+
+                let snapped_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&c_fit)
+                    .filter_map(|(&(kind, f), &c)| {
+                        let s = snap_amplitude(c);
+                        if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
+                    })
+                    .collect();
+                if !snapped_peaks.is_empty() {
+                    candidate_functions.push(TrigFunction::new(snapped_peaks));
+                }
+            }
+
+            // 2B. Spiss-vektet regresjon på NMS-topper
+            if let Some(ref sw) = spike_weights {
+                if let Some(spk_c) = solve_least_squares(&peak_cols, &y_vec, Some(sw)) {
+                    let spk_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&spk_c)
+                        .filter_map(|(&(kind, f), &c)| {
+                            let rounded = (c * 10_000.0).round() / 10_000.0;
+                            if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
+                        })
+                        .collect();
+                    if !spk_peaks.is_empty() {
+                        candidate_functions.push(TrigFunction::new(spk_peaks));
+                    }
+                }
+            }
+
+            // 2C. Subsetter for færre ledd (f.eks. topp 1..=5)
+            let max_sub = peak_terms.len().min(10);
+            for sub_len in 1..=max_sub {
+                let sub_terms = &peak_terms[..sub_len];
+                let sub_cols = &peak_cols[..sub_len];
+                if let Some(sub_c) = solve_least_squares(sub_cols, &y_vec, Some(&weights)) {
+                    let sub_fit: Vec<TrigTerm> = sub_terms.iter().zip(&sub_c)
+                        .filter_map(|(&(kind, f), &c)| {
+                            let s = snap_amplitude(c);
+                            if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
+                        })
+                        .collect();
+                    if !sub_fit.is_empty() {
+                        candidate_functions.push(TrigFunction::new(sub_fit));
+                    }
+                }
+            }
+        }
+    }
+
+    // -------------------------------------------------------------
+    // METODE 3: Fullspektret Fourier-projeksjon (for tette spektre, intervaller [[a..b]])
+    // -------------------------------------------------------------
+    let mut harmonic_spectrum: Vec<(TrigKind, u32, f64)> = Vec::new();
+    for item in &spectrum {
+        harmonic_spectrum.push((TrigKind::Sin, item.freq, item.amp_sin));
+        harmonic_spectrum.push((TrigKind::Cos, item.freq, item.amp_cos));
+    }
+
     let max_harmonic_amp = harmonic_spectrum.iter().map(|(_, _, a)| a.abs()).fold(0.0f64, f64::max);
-    let fourier_threshold = (max_harmonic_amp * 0.08).min(0.15).max(1e-5);
+    let fourier_threshold = (max_harmonic_amp * 0.05).min(0.10).max(1e-5);
 
     let mut significant_components: Vec<(TrigKind, u32, f64)> = harmonic_spectrum
         .iter()
@@ -562,23 +696,10 @@ pub fn identify_function_from_data(
 
     significant_components.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
 
-    // Hvis ingen nådde 5% terskelen, ta alltid med de sterkeste spektraltoppene
-    if significant_components.is_empty() {
-        let mut sorted_spec = harmonic_spectrum.clone();
-        sorted_spec.sort_by(|a, b| b.2.abs().partial_cmp(&a.2.abs()).unwrap());
-        for item in sorted_spec.into_iter().take(5) {
-            if item.2.abs() > 1e-8 {
-                significant_components.push(item);
-            }
-        }
-    }
-
     if !significant_components.is_empty() {
-        // Enkelttopp-kandidat fra det sterkeste leddet
         let top_term = TrigTerm::new(significant_components[0].0, significant_components[0].1, significant_components[0].2);
         candidate_functions.push(TrigFunction::new(vec![top_term]));
 
-        // Alle signifikante ledd
         let fourier_all: Vec<TrigTerm> = significant_components
             .iter()
             .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
@@ -588,21 +709,7 @@ pub fn identify_function_from_data(
             candidate_functions.push(TrigFunction::new(fourier_all));
         }
 
-        // Subsett 1..=5
-        let top_n = significant_components.len().min(5);
-        for count in 1..=top_n {
-            let subset_fitted: Vec<TrigTerm> = significant_components[..count]
-                .iter()
-                .map(|&(kind, f, amp)| TrigTerm::new(kind, f, snap_amplitude(amp)))
-                .filter(|t| t.amp.abs() > 1e-6)
-                .collect();
-            if !subset_fitted.is_empty() {
-                candidate_functions.push(TrigFunction::new(subset_fitted));
-            }
-        }
-
-        // Felles regresjon på komponenter dersom antallet er håndterbart
-        if significant_components.len() >= 2 && significant_components.len() <= 40 {
+        if significant_components.len() >= 2 && significant_components.len() <= 60 {
             let comp_cols: Vec<Vec<f64>> = significant_components.iter().map(|&(kind, f, _)| {
                 x_vec.iter().map(|&x| match kind {
                     TrigKind::Sin => (f as f64 * x).sin(),
@@ -613,14 +720,144 @@ pub fn identify_function_from_data(
             if let Some(c_fit) = solve_least_squares(&comp_cols, &y_vec, Some(&weights)) {
                 let re_fitted: Vec<TrigTerm> = significant_components.iter().zip(&c_fit)
                     .filter_map(|(&(kind, f, _), &c)| {
-                        let s = snap_amplitude(c);
-                        if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
+                        let rounded = (c * 10_000.0).round() / 10_000.0;
+                        if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                     })
                     .collect();
                 if !re_fitted.is_empty() {
                     candidate_functions.push(TrigFunction::new(re_fitted));
                 }
+
+                let re_snapped: Vec<TrigTerm> = significant_components.iter().zip(&c_fit)
+                    .filter_map(|(&(kind, f, _), &c)| {
+                        let s = snap_amplitude(c);
+                        if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
+                    })
+                    .collect();
+                if !re_snapped.is_empty() {
+                    candidate_functions.push(TrigFunction::new(re_snapped));
+                }
             }
+        }
+    }
+
+    // -------------------------------------------------------------
+    // METODE 4: Trinnvis residual-regresjon (OMP) med felles sinus/cosinus-utvalg
+    // -------------------------------------------------------------
+    let mut residual = y_vec.clone();
+    let mut selected_terms: Vec<(TrigKind, u32)> = Vec::new();
+    let mut selected_cols: Vec<Vec<f64>> = Vec::new();
+    let max_omp_steps = 40.min(n / 3);
+
+    for _step in 0..max_omp_steps {
+        let mut r_norm_sq = 0.0;
+        for (&r, &w) in residual.iter().zip(&weights) {
+            r_norm_sq += w * r * r;
+        }
+        let r_norm = r_norm_sq.sqrt();
+        if r_norm < 1e-7 {
+            break;
+        }
+
+        let mut best_score = -1.0;
+        let mut best_freq = 1u32;
+        let mut best_sin_dot = 0.0;
+        let mut best_cos_dot = 0.0;
+
+        for k in 1..=effective_max_n {
+            let sin_selected = selected_terms.contains(&(TrigKind::Sin, k));
+            let cos_selected = selected_terms.contains(&(TrigKind::Cos, k));
+            if sin_selected && cos_selected {
+                continue;
+            }
+
+            let mut dot_s = 0.0;
+            let mut norm_s_sq = 0.0;
+            let mut dot_c = 0.0;
+            let mut norm_c_sq = 0.0;
+
+            for (&x, (&r, &w)) in x_vec.iter().zip(residual.iter().zip(&weights)) {
+                let angle = k as f64 * x;
+                let s = angle.sin();
+                let c = angle.cos();
+
+                if !sin_selected {
+                    dot_s += w * r * s;
+                    norm_s_sq += w * s * s;
+                }
+                if !cos_selected {
+                    dot_c += w * r * c;
+                    norm_c_sq += w * c * c;
+                }
+            }
+
+            let score_s = if norm_s_sq > 1e-9 { dot_s * dot_s / norm_s_sq } else { 0.0 };
+            let score_c = if norm_c_sq > 1e-9 { dot_c * dot_c / norm_c_sq } else { 0.0 };
+            let total_score = (score_s + score_c).sqrt() / r_norm;
+
+            if total_score > best_score {
+                best_score = total_score;
+                best_freq = k;
+                best_sin_dot = dot_s;
+                best_cos_dot = dot_c;
+            }
+        }
+
+        if best_score < 0.01 {
+            break;
+        }
+
+        // Legg til den/de komponentene for best_freq som bidrar
+        if !selected_terms.contains(&(TrigKind::Sin, best_freq)) && best_sin_dot.abs() > 1e-5 {
+            let col: Vec<f64> = x_vec.iter().map(|&x| (best_freq as f64 * x).sin()).collect();
+            selected_terms.push((TrigKind::Sin, best_freq));
+            selected_cols.push(col);
+        }
+        if !selected_terms.contains(&(TrigKind::Cos, best_freq)) && best_cos_dot.abs() > 1e-5 {
+            let col: Vec<f64> = x_vec.iter().map(|&x| (best_freq as f64 * x).cos()).collect();
+            selected_terms.push((TrigKind::Cos, best_freq));
+            selected_cols.push(col);
+        }
+
+        if let Some(coeffs) = solve_least_squares(&selected_cols, &y_vec, Some(&weights)) {
+            let mut cur_rss = 0.0;
+            for i in 0..n {
+                let mut pred = 0.0;
+                for j in 0..selected_terms.len() {
+                    pred += coeffs[j] * selected_cols[j][i];
+                }
+                let err = y_vec[i] - pred;
+                residual[i] = err;
+                cur_rss += err * err;
+            }
+
+            let cur_rmse = (cur_rss / n_pts).sqrt();
+
+            let snapped_terms: Vec<TrigTerm> = selected_terms.iter().zip(&coeffs)
+                .filter_map(|(&(kind, freq), &c)| {
+                    let s = snap_amplitude(c);
+                    if s.abs() > 1e-6 { Some(TrigTerm::new(kind, freq, s)) } else { None }
+                })
+                .collect();
+            if !snapped_terms.is_empty() {
+                candidate_functions.push(TrigFunction::new(snapped_terms));
+            }
+
+            let fitted_terms: Vec<TrigTerm> = selected_terms.iter().zip(&coeffs)
+                .filter_map(|(&(kind, freq), &c)| {
+                    let rounded = (c * 10_000.0).round() / 10_000.0;
+                    if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, freq, rounded)) } else { None }
+                })
+                .collect();
+            if !fitted_terms.is_empty() {
+                candidate_functions.push(TrigFunction::new(fitted_terms));
+            }
+
+            if cur_rmse < 1e-5 {
+                break;
+            }
+        } else {
+            break;
         }
     }
 
@@ -889,5 +1126,32 @@ Indeks,Type,x_rad,x_deg,f_x,Klasse,Klasse_Beskrivelse
         assert!(res.best_match.r_squared > 0.9999);
         assert!(res.best_match.rmse < 1e-4);
         assert_eq!(res.best_match.function.terms.len(), 4);
+    }
+
+    #[test]
+    fn test_identification_deep_spikes() {
+        // Syntetiser et signal med skarpe, dype spisser (topp på +4.0 og dyp bunn på -5.0)
+        let num_points = 1000;
+        let mut data = Vec::with_capacity(num_points);
+        for i in 0..num_points {
+            let x = (i as f64 / (num_points - 1) as f64) * std::f64::consts::TAU;
+            let peak = 4.0 * (-((x - 1.4) / 0.16).powi(2)).exp();
+            let trough = -5.0 * (-((x - 4.1) / 0.14).powi(2)).exp();
+            let y = peak + trough;
+            data.push(DataPoint { x, y });
+        }
+
+        let res = identify_function_from_data(&data, 35).expect("Identifikasjon feilet for dype spisser");
+        println!(
+            "Dype spisser funnet: R2={:.5}, RMSE={:.4}, maks feil={:.4}, ledd={}",
+            res.best_match.r_squared,
+            res.best_match.rmse,
+            res.best_match.max_error,
+            res.best_match.function.terms.len()
+        );
+
+        // Bekreft at modellen oppnår R² > 0.985 og fanger opp de dype spissene med minimal feil
+        assert!(res.best_match.r_squared > 0.985, "R² for lav for dype spisser: {}", res.best_match.r_squared);
+        assert!(res.best_match.max_error < 0.35, "Maksfeil ved spiss for høy: {}", res.best_match.max_error);
     }
 }

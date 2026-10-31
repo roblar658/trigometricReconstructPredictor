@@ -266,8 +266,9 @@ mod tests {
             assert_eq!(meta.channels, 1);
             assert!(pts.len() >= 1000);
 
-            let res = crate::csv_analyzer::identify_function_from_data(&pts, 1000).unwrap();
-            assert!(res.best_match.r_squared > 0.60);
+            let res = crate::csv_analyzer::identify_function_from_data(&pts, 3500).unwrap();
+            println!("Vokal A mann match: R2 = {:.5}, ledd = {}", res.best_match.r_squared, res.best_match.function.terms.len());
+            assert!(res.best_match.r_squared > 0.95, "R² for lav for vokal A: {}", res.best_match.r_squared);
 
             // Sjekk at minst en av de fundamentale harmoniske (130, 260, 390, 520, 650, 780 Hz) ble funnet
             let freqs: Vec<u32> = res.best_match.function.terms.iter().map(|t| t.freq).collect();
@@ -295,8 +296,9 @@ mod tests {
             assert_eq!(meta.channels, 1);
             assert!(pts.len() >= 1000);
 
-            let res = crate::csv_analyzer::identify_function_from_data(&pts, 1200).unwrap();
-            assert!(res.best_match.r_squared > 0.60);
+            let res = crate::csv_analyzer::identify_function_from_data(&pts, 3500).unwrap();
+            println!("Vokal A kvinne match: R2 = {:.5}, ledd = {}", res.best_match.r_squared, res.best_match.function.terms.len());
+            assert!(res.best_match.r_squared > 0.95, "R² for lav for kvinne vokal A: {}", res.best_match.r_squared);
 
             // For kvinnestemme med F0=220 Hz og F1=850 Hz, skal vi finne harmoniske (f.eks. 660, 880 eller 220 Hz)
             let freqs: Vec<u32> = res.best_match.function.terms.iter().map(|t| t.freq).collect();

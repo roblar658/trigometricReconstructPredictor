@@ -521,8 +521,8 @@ impl ExtremaApp {
                         self.csv_file_path = Some(path);
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
-                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 2000 {
-                            self.csv_max_n = 2000;
+                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 3500 {
+                            self.csv_max_n = 3500;
                         }
                         self.analyze_loaded_csv();
                     }
@@ -570,8 +570,8 @@ impl ExtremaApp {
                     Ok((meta, pts)) => {
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
-                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 2000 {
-                            self.csv_max_n = 2000;
+                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 3500 {
+                            self.csv_max_n = 3500;
                         }
                         self.analyze_loaded_csv();
                     }
