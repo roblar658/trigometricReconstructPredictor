@@ -273,7 +273,36 @@ mod tests {
             let freqs: Vec<u32> = res.best_match.function.terms.iter().map(|t| t.freq).collect();
             assert!(
                 freqs.iter().any(|&f| f % 130 == 0 || (f as i32 - 130).abs() <= 5),
-                "Fant ikke forventede harmoniske komponenter for vokal A: {:?}",
+                "Fant ikke forventede harmoniske komponenter for mann vokal A: {:?}",
+                freqs
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_synthesized_female_vocal_flac() {
+        let path = Path::new("test_audio/vocals/vocal_female_a.flac");
+        if path.exists() {
+            let opts = FlacExtractionOptions {
+                max_points: 2000,
+                start_seconds: 0.1,
+                duration_seconds: None,
+                time_as_hz_radians: true,
+            };
+
+            let (meta, pts) = read_flac_data(path, &opts).unwrap();
+            assert_eq!(meta.sample_rate, 16000);
+            assert_eq!(meta.channels, 1);
+            assert!(pts.len() >= 1000);
+
+            let res = crate::csv_analyzer::identify_function_from_data(&pts, 1200).unwrap();
+            assert!(res.best_match.r_squared > 0.60);
+
+            // For kvinnestemme med F0=220 Hz og F1=850 Hz, skal vi finne harmoniske (f.eks. 660, 880 eller 220 Hz)
+            let freqs: Vec<u32> = res.best_match.function.terms.iter().map(|t| t.freq).collect();
+            assert!(
+                freqs.iter().any(|&f| f % 220 == 0 || (f as i32 - 220).abs() <= 5 || (f as i32 - 660).abs() <= 5 || (f as i32 - 880).abs() <= 5),
+                "Fant ikke forventede harmoniske komponenter for kvinne vokal A: {:?}",
                 freqs
             );
         }

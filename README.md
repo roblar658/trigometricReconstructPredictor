@@ -663,28 +663,43 @@ cargo test -j 1
 ```
 
 ### D. Test-Lydfiler for Vokaler (FLAC & Fonetiske Formanter):
-Prosjektet leveres med et komplett sett syntetiserte, tapsfrie testlydfiler for samtlige 9 norske vokaler under [`test_audio/vocals/`](test_audio/vocals/) (se full dokumentasjon i [`test_audio/README.md`](test_audio/README.md)):
+Prosjektet leveres med et komplett sett syntetiserte, tapsfrie testlydfiler for samtlige 9 norske vokaler under [`test_audio/vocals/`](test_audio/vocals/) for både **mannsstemme** ($F_0 = 130$ Hz) og **kvinnestemme** ($F_0 = 220$ Hz) (se full dokumentasjon i [`test_audio/README.md`](test_audio/README.md)):
 
-* **Individuelle Vokalfiler** (16 kHz, 16-bit PCM mono, $F_0 = 130$ Hz):
-  * **A** (`vocal_a.flac`): $F_1=730, F_2=1090, F_3=2440$ Hz
-  * **E** (`vocal_e.flac`): $F_1=530, F_2=1840, F_3=2480$ Hz
-  * **I** (`vocal_i.flac`): $F_1=270, F_2=2290, F_3=3010$ Hz
-  * **O** (`vocal_o.flac`): $F_1=570, F_2=840, F_3=2410$ Hz
-  * **U** (`vocal_u.flac`): $F_1=300, F_2=870, F_3=2240$ Hz
-  * **Y** (`vocal_y.flac`): $F_1=270, F_2=1900, F_3=2800$ Hz
+* **Mannsstemme** (16 kHz, 16-bit PCM mono, $F_0 = 130$ Hz):
+  * **A** (`vocal_a.flac` / `vocal_male_a.flac`): $F_1=730, F_2=1090, F_3=2440$ Hz
+  * **E** (`vocal_e.flac` / `vocal_male_e.flac`): $F_1=530, F_2=1840, F_3=2480$ Hz
+  * **I** (`vocal_i.flac` / `vocal_male_i.flac`): $F_1=270, F_2=2290, F_3=3010$ Hz
+  * **O** (`vocal_o.flac` / `vocal_male_o.flac`): $F_1=570, F_2=840, F_3=2410$ Hz
+  * **U** (`vocal_u.flac` / `vocal_male_u.flac`): $F_1=300, F_2=870, F_3=2240$ Hz
+  * **Y** (`vocal_y.flac` / `vocal_male_y.flac`): $F_1=270, F_2=1900, F_3=2800$ Hz
   * **Æ** (`vocal_ae.flac` / `vocal_æ.flac`): $F_1=660, F_2=1720, F_3=2410$ Hz
   * **Ø** (`vocal_oe.flac` / `vocal_ø.flac`): $F_1=500, F_2=1500, F_3=2300$ Hz
   * **Å** (`vocal_aa.flac` / `vocal_å.flac`): $F_1=510, F_2=900, F_3=2500$ Hz
-* **Sammensatt Testsekvens** ([`all_vocals_sequence.flac`](test_audio/vocals/all_vocals_sequence.flac), 21,15s):
-  * Inneholder alle 9 vokalene i rekkefølge adskilt med 350 ms stillhet.
-  * Ideell for testing av **interaktiv sub-områdemarkering (`[minX, maxX]`) og zooming** i Fane 2 (CSV & FLAC).
-* **CLI-hurtigtest for vokaler**:
+  * **Sekvensfil**: [`all_vocals_sequence.flac`](test_audio/vocals/all_vocals_sequence.flac) (21,15s, alle 9 vokaler adskilt med 350 ms stillhet).
+
+* **Kvinnestemme** (16 kHz, 16-bit PCM mono, $F_0 = 220$ Hz, A3):
+  * **A** (`vocal_female_a.flac`): $F_1=850, F_2=1220, F_3=2810$ Hz
+  * **E** (`vocal_female_e.flac`): $F_1=590, F_2=2310, F_3=2990$ Hz
+  * **I** (`vocal_female_i.flac`): $F_1=310, F_2=2790, F_3=3310$ Hz
+  * **O** (`vocal_female_o.flac`): $F_1=600, F_2=950, F_3=2800$ Hz
+  * **U** (`vocal_female_u.flac`): $F_1=370, F_2=950, F_3=2600$ Hz
+  * **Y** (`vocal_female_y.flac`): $F_1=310, F_2=2300, F_3=3200$ Hz
+  * **Æ** (`vocal_female_ae.flac` / `vocal_female_æ.flac`): $F_1=860, F_2=2050, F_3=2850$ Hz
+  * **Ø** (`vocal_female_oe.flac` / `vocal_female_ø.flac`): $F_1=550, F_2=1800, F_3=2700$ Hz
+  * **Å** (`vocal_female_aa.flac` / `vocal_female_å.flac`): $F_1=610, F_2=1050, F_3=2850$ Hz
+  * **Sekvensfil**: [`all_vocals_sequence_female.flac`](test_audio/vocals/all_vocals_sequence_female.flac) (21,15s, alle 9 kvinnevokaler med 350 ms stillhet).
+
+* **Testing i GUI og CLI**:
+  * Sekvensfilene er ideelle for å teste **interaktiv sub-områdemarkering (`[minX, maxX]`) og zooming** i Fane 2 (CSV & FLAC).
   ```bash
-  # Analyser vokal A direkte:
+  # Analyser mann vokal A:
   cargo run -- analyze-flac "test_audio/vocals/vocal_a.flac" --plot true
 
-  # Analyser vokal E isolert fra sekvensfilen ved starttidspunkt 2.35 sekunder:
-  cargo run -- analyze-flac "test_audio/vocals/all_vocals_sequence.flac" --start-seconds 2.35 --max-points 2000
+  # Analyser kvinne vokal A:
+  cargo run -- analyze-flac "test_audio/vocals/vocal_female_a.flac" --plot true
+
+  # Analyser kvinne vokal E fra sekvensfilen ved starttidspunkt 2.35 sekunder:
+  cargo run -- analyze-flac "test_audio/vocals/all_vocals_sequence_female.flac" --start-seconds 2.35 --max-points 2000
   ```
 
 ### E. MSI-Installasjonspakke (Windows Installer):

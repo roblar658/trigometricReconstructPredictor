@@ -1,155 +1,482 @@
 {
-  "a": {
-    "name": "Vokal A",
-    "ipa": "ɑ",
-    "example": "som i 'bra' / 'far'",
-    "filename": "vocal_a.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_a.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
+  "male": {
     "f0_hz": 130.0,
-    "formants_hz": [
-      730,
-      1090,
-      2440
-    ]
+    "vowels": {
+      "a": {
+        "name": "Mann Vokal A",
+        "vowel": "A",
+        "voice": "male",
+        "ipa": "ɑ",
+        "example": "som i 'bra' / 'far'",
+        "primary_file": "vocal_a.flac",
+        "alias_files": [
+          "vocal_male_a.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_a.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          730,
+          1090,
+          2440
+        ]
+      },
+      "e": {
+        "name": "Mann Vokal E",
+        "vowel": "E",
+        "voice": "male",
+        "ipa": "e",
+        "example": "som i 'se' / 'bed'",
+        "primary_file": "vocal_e.flac",
+        "alias_files": [
+          "vocal_male_e.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_e.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          530,
+          1840,
+          2480
+        ]
+      },
+      "i": {
+        "name": "Mann Vokal I",
+        "vowel": "I",
+        "voice": "male",
+        "ipa": "i",
+        "example": "som i 'si' / 'bee'",
+        "primary_file": "vocal_i.flac",
+        "alias_files": [
+          "vocal_male_i.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_i.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          270,
+          2290,
+          3010
+        ]
+      },
+      "o": {
+        "name": "Mann Vokal O",
+        "vowel": "O",
+        "voice": "male",
+        "ipa": "u",
+        "example": "som i 'mor' / 'boat'",
+        "primary_file": "vocal_o.flac",
+        "alias_files": [
+          "vocal_male_o.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_o.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          570,
+          840,
+          2410
+        ]
+      },
+      "u": {
+        "name": "Mann Vokal U",
+        "vowel": "U",
+        "voice": "male",
+        "ipa": "ʉ",
+        "example": "som i 'sol' / 'boot'",
+        "primary_file": "vocal_u.flac",
+        "alias_files": [
+          "vocal_male_u.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_u.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          300,
+          870,
+          2240
+        ]
+      },
+      "y": {
+        "name": "Mann Vokal Y",
+        "vowel": "Y",
+        "voice": "male",
+        "ipa": "y",
+        "example": "som i 'lys' / 'über'",
+        "primary_file": "vocal_y.flac",
+        "alias_files": [
+          "vocal_male_y.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_y.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          270,
+          1900,
+          2800
+        ]
+      },
+      "ae": {
+        "name": "Mann Vokal Æ",
+        "vowel": "Æ",
+        "voice": "male",
+        "ipa": "æ",
+        "example": "som i 'bær' / 'cat'",
+        "primary_file": "vocal_ae.flac",
+        "alias_files": [
+          "vocal_male_ae.flac",
+          "vocal_æ.flac",
+          "vocal_male_æ.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_ae.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          660,
+          1720,
+          2410
+        ]
+      },
+      "oe": {
+        "name": "Mann Vokal Ø",
+        "vowel": "Ø",
+        "voice": "male",
+        "ipa": "ø",
+        "example": "som i 'dør' / 'schön'",
+        "primary_file": "vocal_oe.flac",
+        "alias_files": [
+          "vocal_male_oe.flac",
+          "vocal_ø.flac",
+          "vocal_male_ø.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_oe.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          500,
+          1500,
+          2300
+        ]
+      },
+      "aa": {
+        "name": "Mann Vokal Å",
+        "vowel": "Å",
+        "voice": "male",
+        "ipa": "ɔ",
+        "example": "som i 'båt' / 'thought'",
+        "primary_file": "vocal_aa.flac",
+        "alias_files": [
+          "vocal_male_aa.flac",
+          "vocal_å.flac",
+          "vocal_male_å.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_aa.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 130.0,
+        "formants_hz": [
+          510,
+          900,
+          2500
+        ]
+      }
+    },
+    "sequence": {
+      "name": "Alle vokaler i sekvens (male)",
+      "voice": "male",
+      "filename": "all_vocals_sequence.flac",
+      "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\all_vocals_sequence.flac",
+      "sample_rate": 16000,
+      "f0_hz": 130.0,
+      "total_duration_sec": 21.15,
+      "vowels_order": [
+        "A",
+        "E",
+        "I",
+        "O",
+        "U",
+        "Y",
+        "Æ",
+        "Ø",
+        "Å"
+      ],
+      "timeline_seconds": {
+        "A": [
+          0.0,
+          2.0
+        ],
+        "E": [
+          2.35,
+          4.35
+        ],
+        "I": [
+          4.7,
+          6.7
+        ],
+        "O": [
+          7.05,
+          9.05
+        ],
+        "U": [
+          9.4,
+          11.4
+        ],
+        "Y": [
+          11.75,
+          13.75
+        ],
+        "Æ": [
+          14.1,
+          16.1
+        ],
+        "Ø": [
+          16.45,
+          18.45
+        ],
+        "Å": [
+          18.8,
+          20.8
+        ]
+      }
+    }
   },
-  "e": {
-    "name": "Vokal E",
-    "ipa": "e",
-    "example": "som i 'se' / 'bed'",
-    "filename": "vocal_e.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_e.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      530,
-      1840,
-      2480
-    ]
-  },
-  "i": {
-    "name": "Vokal I",
-    "ipa": "i",
-    "example": "som i 'si' / 'bee'",
-    "filename": "vocal_i.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_i.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      270,
-      2290,
-      3010
-    ]
-  },
-  "o": {
-    "name": "Vokal O",
-    "ipa": "u",
-    "example": "som i 'mor' / 'boat'",
-    "filename": "vocal_o.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_o.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      570,
-      840,
-      2410
-    ]
-  },
-  "u": {
-    "name": "Vokal U",
-    "ipa": "ʉ",
-    "example": "som i 'sol' / 'boot'",
-    "filename": "vocal_u.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_u.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      300,
-      870,
-      2240
-    ]
-  },
-  "y": {
-    "name": "Vokal Y",
-    "ipa": "y",
-    "example": "som i 'lys' / 'über'",
-    "filename": "vocal_y.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_y.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      270,
-      1900,
-      2800
-    ]
-  },
-  "ae": {
-    "name": "Vokal Æ",
-    "ipa": "æ",
-    "example": "som i 'bær' / 'cat'",
-    "filename": "vocal_ae.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_ae.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      660,
-      1720,
-      2410
-    ]
-  },
-  "oe": {
-    "name": "Vokal Ø",
-    "ipa": "ø",
-    "example": "som i 'dør' / 'schön'",
-    "filename": "vocal_oe.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_oe.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      500,
-      1500,
-      2300
-    ]
-  },
-  "aa": {
-    "name": "Vokal Å",
-    "ipa": "ɔ",
-    "example": "som i 'båt' / 'thought'",
-    "filename": "vocal_aa.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_aa.flac",
-    "sample_rate": 16000,
-    "duration_sec": 2.0,
-    "f0_hz": 130.0,
-    "formants_hz": [
-      510,
-      900,
-      2500
-    ]
-  },
-  "all_sequence": {
-    "name": "Alle vokaler i sekvens",
-    "filename": "all_vocals_sequence.flac",
-    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\all_vocals_sequence.flac",
-    "sample_rate": 16000,
-    "total_duration_sec": 21.15,
-    "vowels_order": [
-      "a",
-      "e",
-      "i",
-      "o",
-      "u",
-      "y",
-      "ae",
-      "oe",
-      "aa"
-    ]
+  "female": {
+    "f0_hz": 220.0,
+    "vowels": {
+      "a": {
+        "name": "Kvinne Vokal A",
+        "vowel": "A",
+        "voice": "female",
+        "ipa": "ɑ",
+        "example": "som i 'bra' / 'far'",
+        "primary_file": "vocal_female_a.flac",
+        "alias_files": [],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_a.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          850,
+          1220,
+          2810
+        ]
+      },
+      "e": {
+        "name": "Kvinne Vokal E",
+        "vowel": "E",
+        "voice": "female",
+        "ipa": "e",
+        "example": "som i 'se' / 'bed'",
+        "primary_file": "vocal_female_e.flac",
+        "alias_files": [],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_e.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          590,
+          2310,
+          2990
+        ]
+      },
+      "i": {
+        "name": "Kvinne Vokal I",
+        "vowel": "I",
+        "voice": "female",
+        "ipa": "i",
+        "example": "som i 'si' / 'bee'",
+        "primary_file": "vocal_female_i.flac",
+        "alias_files": [],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_i.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          310,
+          2790,
+          3310
+        ]
+      },
+      "o": {
+        "name": "Kvinne Vokal O",
+        "vowel": "O",
+        "voice": "female",
+        "ipa": "u",
+        "example": "som i 'mor' / 'boat'",
+        "primary_file": "vocal_female_o.flac",
+        "alias_files": [],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_o.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          600,
+          950,
+          2800
+        ]
+      },
+      "u": {
+        "name": "Kvinne Vokal U",
+        "vowel": "U",
+        "voice": "female",
+        "ipa": "ʉ",
+        "example": "som i 'sol' / 'boot'",
+        "primary_file": "vocal_female_u.flac",
+        "alias_files": [],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_u.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          370,
+          950,
+          2600
+        ]
+      },
+      "y": {
+        "name": "Kvinne Vokal Y",
+        "vowel": "Y",
+        "voice": "female",
+        "ipa": "y",
+        "example": "som i 'lys' / 'über'",
+        "primary_file": "vocal_female_y.flac",
+        "alias_files": [],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_y.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          310,
+          2300,
+          3200
+        ]
+      },
+      "ae": {
+        "name": "Kvinne Vokal Æ",
+        "vowel": "Æ",
+        "voice": "female",
+        "ipa": "æ",
+        "example": "som i 'bær' / 'cat'",
+        "primary_file": "vocal_female_ae.flac",
+        "alias_files": [
+          "vocal_female_æ.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_ae.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          860,
+          2050,
+          2850
+        ]
+      },
+      "oe": {
+        "name": "Kvinne Vokal Ø",
+        "vowel": "Ø",
+        "voice": "female",
+        "ipa": "ø",
+        "example": "som i 'dør' / 'schön'",
+        "primary_file": "vocal_female_oe.flac",
+        "alias_files": [
+          "vocal_female_ø.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_oe.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          550,
+          1800,
+          2700
+        ]
+      },
+      "aa": {
+        "name": "Kvinne Vokal Å",
+        "vowel": "Å",
+        "voice": "female",
+        "ipa": "ɔ",
+        "example": "som i 'båt' / 'thought'",
+        "primary_file": "vocal_female_aa.flac",
+        "alias_files": [
+          "vocal_female_å.flac"
+        ],
+        "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_female_aa.flac",
+        "sample_rate": 16000,
+        "duration_sec": 2.0,
+        "f0_hz": 220.0,
+        "formants_hz": [
+          610,
+          1050,
+          2850
+        ]
+      }
+    },
+    "sequence": {
+      "name": "Alle vokaler i sekvens (female)",
+      "voice": "female",
+      "filename": "all_vocals_sequence_female.flac",
+      "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\all_vocals_sequence_female.flac",
+      "sample_rate": 16000,
+      "f0_hz": 220.0,
+      "total_duration_sec": 21.15,
+      "vowels_order": [
+        "A",
+        "E",
+        "I",
+        "O",
+        "U",
+        "Y",
+        "Æ",
+        "Ø",
+        "Å"
+      ],
+      "timeline_seconds": {
+        "A": [
+          0.0,
+          2.0
+        ],
+        "E": [
+          2.35,
+          4.35
+        ],
+        "I": [
+          4.7,
+          6.7
+        ],
+        "O": [
+          7.05,
+          9.05
+        ],
+        "U": [
+          9.4,
+          11.4
+        ],
+        "Y": [
+          11.75,
+          13.75
+        ],
+        "Æ": [
+          14.1,
+          16.1
+        ],
+        "Ø": [
+          16.45,
+          18.45
+        ],
+        "Å": [
+          18.8,
+          20.8
+        ]
+      }
+    }
   }
 }
