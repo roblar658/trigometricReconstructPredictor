@@ -441,8 +441,8 @@ pub fn identify_function_from_data(
         for (p, &w) in sorted_data.iter().zip(&weights) {
             let dev = (p.y - mean_y).abs();
             let ratio = dev / max_dev;
-            // Øk vektingen kraftig på de dypeste spissene/toppene slik at de ikke avrundes eller flates ut
-            let boost = 1.0 + 4.0 * ratio.powi(2);
+            // Eksponentiell/kubisk vekting på de dypeste spissene/toppene slik at de fanges med ekstrem presisjon
+            let boost = 1.0 + 8.0 * ratio.powi(3);
             sw.push(w * boost);
         }
         Some(sw)
@@ -495,21 +495,23 @@ pub fn identify_function_from_data(
         }
 
         // Hvis den harmoniske strukturen forklarer en vesentlig del av spekteret:
-        if best_f0_score > 0.25 * total_spectral_power {
-            let p_thresh = (max_spectral_power * 1e-4).max(1e-9);
+        if best_f0_score > 0.20 * total_spectral_power {
+            let p_thresh = (max_spectral_power * 1e-5).max(1e-10);
             let mut harm_terms: Vec<(TrigKind, u32)> = Vec::new();
             let mut h = 1;
-            while h * best_f0 <= effective_max_n && harm_terms.len() < 120 {
+            // Utvid harmoniske frekvenser opp til fysisk Nyquist (inntil 8000 Hz) for å fange dype spisser helt opp til R² ~ 1
+            let harmonic_upper_limit = nyquist_k.min(8000).max(effective_max_n);
+            while h * best_f0 <= harmonic_upper_limit && harm_terms.len() < 180 {
                 let f = h * best_f0;
                 let idx = (f - 1) as usize;
-                let item = &spectrum[idx];
-                if item.power >= p_thresh {
-                    if item.amp_sin.abs() > 1e-6 {
-                        harm_terms.push((TrigKind::Sin, f));
-                    }
-                    if item.amp_cos.abs() > 1e-6 {
-                        harm_terms.push((TrigKind::Cos, f));
-                    }
+                let has_energy = if idx < spectrum.len() {
+                    spectrum[idx].power >= p_thresh
+                } else {
+                    true
+                };
+                if has_energy {
+                    harm_terms.push((TrigKind::Sin, f));
+                    harm_terms.push((TrigKind::Cos, f));
                 }
                 h += 1;
             }
@@ -523,9 +525,10 @@ pub fn identify_function_from_data(
                 }).collect();
 
                 // 1A. Standard regresjon
-                if let Some(coeffs) = solve_least_squares(&harm_cols, &y_vec, Some(&weights)) {
+                let solved_coeffs = solve_least_squares(&harm_cols, &y_vec, Some(&weights));
+                if let Some(ref coeffs) = solved_coeffs {
                     // Eksakt tilpasning (maksimal R²)
-                    let exact_terms: Vec<TrigTerm> = harm_terms.iter().zip(&coeffs)
+                    let exact_terms: Vec<TrigTerm> = harm_terms.iter().zip(coeffs)
                         .filter_map(|(&(kind, f), &c)| {
                             let rounded = (c * 10_000.0).round() / 10_000.0;
                             if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
@@ -536,7 +539,7 @@ pub fn identify_function_from_data(
                     }
 
                     // Snappet tilpasning
-                    let snapped_terms: Vec<TrigTerm> = harm_terms.iter().zip(&coeffs)
+                    let snapped_terms: Vec<TrigTerm> = harm_terms.iter().zip(coeffs)
                         .filter_map(|(&(kind, f), &c)| {
                             let s = snap_amplitude(c);
                             if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
@@ -544,6 +547,42 @@ pub fn identify_function_from_data(
                         .collect();
                     if !snapped_terms.is_empty() {
                         candidate_functions.push(TrigFunction::new(snapped_terms));
+                    }
+
+                    // 1C. Iterativ spiss-tilpasning (IRLS for å fange de aller dypeste spissene)
+                    let mut max_abs_err = 0.0f64;
+                    let mut point_errors = Vec::with_capacity(n);
+                    for i in 0..n {
+                        let mut pred = 0.0;
+                        for j in 0..harm_terms.len() {
+                            pred += coeffs[j] * harm_cols[j][i];
+                        }
+                        let err = (y_vec[i] - pred).abs();
+                        if err > max_abs_err {
+                            max_abs_err = err;
+                        }
+                        point_errors.push(err);
+                    }
+
+                    if max_abs_err > 1e-4 {
+                        let mut irls_weights = Vec::with_capacity(n);
+                        for i in 0..n {
+                            let err_ratio = point_errors[i] / max_abs_err;
+                            let boost = 1.0 + 3.0 * err_ratio.powi(2);
+                            irls_weights.push(weights[i] * boost);
+                        }
+
+                        if let Some(irls_c) = solve_least_squares(&harm_cols, &y_vec, Some(&irls_weights)) {
+                            let irls_terms: Vec<TrigTerm> = harm_terms.iter().zip(&irls_c)
+                                .filter_map(|(&(kind, f), &c)| {
+                                    let rounded = (c * 10_000.0).round() / 10_000.0;
+                                    if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
+                                })
+                                .collect();
+                            if !irls_terms.is_empty() {
+                                candidate_functions.push(TrigFunction::new(irls_terms));
+                            }
+                        }
                     }
                 }
 
@@ -591,7 +630,7 @@ pub fn identify_function_from_data(
     for &(f, _) in &local_peaks {
         if !nms_peaks.iter().any(|&pf| (pf as i64 - f as i64).abs() <= rayleigh_width as i64) {
             nms_peaks.push(f);
-            if nms_peaks.len() >= 60 {
+            if nms_peaks.len() >= 100 {
                 break;
             }
         }
@@ -619,8 +658,9 @@ pub fn identify_function_from_data(
             }).collect();
 
             // 2A. Standard regresjon på NMS-topper
-            if let Some(c_fit) = solve_least_squares(&peak_cols, &y_vec, Some(&weights)) {
-                let exact_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&c_fit)
+            let solved_c_fit = solve_least_squares(&peak_cols, &y_vec, Some(&weights));
+            if let Some(ref c_fit) = solved_c_fit {
+                let exact_peaks: Vec<TrigTerm> = peak_terms.iter().zip(c_fit)
                     .filter_map(|(&(kind, f), &c)| {
                         let rounded = (c * 10_000.0).round() / 10_000.0;
                         if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
@@ -630,7 +670,7 @@ pub fn identify_function_from_data(
                     candidate_functions.push(TrigFunction::new(exact_peaks));
                 }
 
-                let snapped_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&c_fit)
+                let snapped_peaks: Vec<TrigTerm> = peak_terms.iter().zip(c_fit)
                     .filter_map(|(&(kind, f), &c)| {
                         let s = snap_amplitude(c);
                         if s.abs() > 1e-6 { Some(TrigTerm::new(kind, f, s)) } else { None }
@@ -638,6 +678,39 @@ pub fn identify_function_from_data(
                     .collect();
                 if !snapped_peaks.is_empty() {
                     candidate_functions.push(TrigFunction::new(snapped_peaks));
+                }
+
+                // 2D. IRLS Refinement for dype spisser
+                let mut max_abs_err = 0.0f64;
+                let mut pt_errors = Vec::with_capacity(n);
+                for i in 0..n {
+                    let mut pred = 0.0;
+                    for j in 0..peak_terms.len() {
+                        pred += c_fit[j] * peak_cols[j][i];
+                    }
+                    let err = (y_vec[i] - pred).abs();
+                    if err > max_abs_err {
+                        max_abs_err = err;
+                    }
+                    pt_errors.push(err);
+                }
+                if max_abs_err > 1e-4 {
+                    let mut irls_w = Vec::with_capacity(n);
+                    for i in 0..n {
+                        let boost = 1.0 + 3.0 * (pt_errors[i] / max_abs_err).powi(2);
+                        irls_w.push(weights[i] * boost);
+                    }
+                    if let Some(irls_c) = solve_least_squares(&peak_cols, &y_vec, Some(&irls_w)) {
+                        let irls_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&irls_c)
+                            .filter_map(|(&(kind, f), &c)| {
+                                let rounded = (c * 10_000.0).round() / 10_000.0;
+                                if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
+                            })
+                            .collect();
+                        if !irls_peaks.is_empty() {
+                            candidate_functions.push(TrigFunction::new(irls_peaks));
+                        }
+                    }
                 }
             }
 
@@ -709,7 +782,7 @@ pub fn identify_function_from_data(
             candidate_functions.push(TrigFunction::new(fourier_all));
         }
 
-        if significant_components.len() >= 2 && significant_components.len() <= 60 {
+        if significant_components.len() >= 2 && significant_components.len() <= 120 {
             let comp_cols: Vec<Vec<f64>> = significant_components.iter().map(|&(kind, f, _)| {
                 x_vec.iter().map(|&x| match kind {
                     TrigKind::Sin => (f as f64 * x).sin(),
@@ -747,7 +820,7 @@ pub fn identify_function_from_data(
     let mut residual = y_vec.clone();
     let mut selected_terms: Vec<(TrigKind, u32)> = Vec::new();
     let mut selected_cols: Vec<Vec<f64>> = Vec::new();
-    let max_omp_steps = 40.min(n / 3);
+    let max_omp_steps = 60.min(n / 3);
 
     for _step in 0..max_omp_steps {
         let mut r_norm_sq = 0.0;
@@ -916,14 +989,14 @@ pub fn identify_function_from_data(
     // 2. Sekundært: Ved lik R² (forskjell <= 0.0001), velg færrest ledd (Occam's razor mot overtilpasning)
     // 3. Tertiært: Lavest RMSE og maks feil
     evaluated_candidates.sort_by(|a, b| {
-        // Diskrete bøtter for R² (trinn på 0.0001) for å garantere total ordning uten brudd på transitivitet
-        let bucket_a = (a.r_squared * 10_000.0).round() as i64;
-        let bucket_b = (b.r_squared * 10_000.0).round() as i64;
+        // Diskrete bøtter for R² (trinn på 0.000001) for å prioritere maksimal R² helt opp til 1.0
+        let bucket_a = (a.r_squared * 1_000_000.0).round() as i64;
+        let bucket_b = (b.r_squared * 1_000_000.0).round() as i64;
 
         bucket_b.cmp(&bucket_a)
-            .then_with(|| a.function.terms.len().cmp(&b.function.terms.len()))
-            .then_with(|| a.rmse.partial_cmp(&b.rmse).unwrap_or(std::cmp::Ordering::Equal))
             .then_with(|| a.max_error.partial_cmp(&b.max_error).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.rmse.partial_cmp(&b.rmse).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.function.terms.len().cmp(&b.function.terms.len()))
             .then_with(|| a.function.format_expr().cmp(&b.function.format_expr()))
     });
 
@@ -1153,5 +1226,32 @@ Indeks,Type,x_rad,x_deg,f_x,Klasse,Klasse_Beskrivelse
         // Bekreft at modellen oppnår R² > 0.985 og fanger opp de dype spissene med minimal feil
         assert!(res.best_match.r_squared > 0.985, "R² for lav for dype spisser: {}", res.best_match.r_squared);
         assert!(res.best_match.max_error < 0.35, "Maksfeil ved spiss for høy: {}", res.best_match.max_error);
+    }
+
+    #[test]
+    fn test_identification_ultra_deep_spikes() {
+        // Ekstremt spisst signal med høy amplitude (topp på +10.0 og dyp bunn på -12.0)
+        let num_points = 1200;
+        let mut data = Vec::with_capacity(num_points);
+        for i in 0..num_points {
+            let x = (i as f64 / (num_points - 1) as f64) * std::f64::consts::TAU;
+            let peak = 10.0 * (-((x - 1.2) / 0.10).powi(2)).exp();
+            let trough = -12.0 * (-((x - 4.5) / 0.08).powi(2)).exp();
+            let y = peak + trough;
+            data.push(DataPoint { x, y });
+        }
+
+        let res = identify_function_from_data(&data, 50).expect("Identifikasjon feilet for ultra dype spisser");
+        println!(
+            "Ultra dype spisser funnet: R2={:.6}, RMSE={:.4}, maks feil={:.4}, ledd={}",
+            res.best_match.r_squared,
+            res.best_match.rmse,
+            res.best_match.max_error,
+            res.best_match.function.terms.len()
+        );
+
+        // Bekreft at modellen fanger opp de dypeste spissene helt opp mot 1 i R²
+        assert!(res.best_match.r_squared > 0.990, "R² for lav for ultra dype spisser: {}", res.best_match.r_squared);
+        assert!(res.best_match.max_error < 0.65, "Maksfeil ved ultra dyp spiss for høy: {}", res.best_match.max_error);
     }
 }
