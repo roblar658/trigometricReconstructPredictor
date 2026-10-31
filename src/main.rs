@@ -118,7 +118,7 @@ enum Commands {
         #[arg(help = "Filsti til FLAC-lydfilen som skal analyseres")]
         file: PathBuf,
 
-        #[arg(long, default_value_t = 3500, help = "Maksimal frekvens k som testes under søket (k = Hz)")]
+        #[arg(long, default_value_t = 8000, help = "Maksimal frekvens k som testes under søket (k = Hz)")]
         max_k: u32,
 
         #[arg(long, default_value_t = 2000, help = "Maksimalt antall prøvepunkter som leses ut fra FLAC-filen")]

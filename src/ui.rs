@@ -519,10 +519,11 @@ impl ExtremaApp {
                             self.csv_plot_bounds_request = Some([full_min_x, y_min - pad, full_max_x, y_max + pad]);
                         }
                         self.csv_file_path = Some(path);
+                        let target_k = (meta.sample_rate / 2).max(8000);
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
-                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 3500 {
-                            self.csv_max_n = 3500;
+                        if self.flac_options.time_as_hz_radians && self.csv_max_n < target_k {
+                            self.csv_max_n = target_k;
                         }
                         self.analyze_loaded_csv();
                     }
@@ -568,10 +569,11 @@ impl ExtremaApp {
             if path.extension().map(|e| e.to_string_lossy().to_lowercase() == "flac").unwrap_or(false) {
                 match crate::flac_loader::read_flac_data(path, &self.flac_options) {
                     Ok((meta, pts)) => {
+                        let target_k = (meta.sample_rate / 2).max(8000);
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
-                        if self.flac_options.time_as_hz_radians && self.csv_max_n < 3500 {
-                            self.csv_max_n = 3500;
+                        if self.flac_options.time_as_hz_radians && self.csv_max_n < target_k {
+                            self.csv_max_n = target_k;
                         }
                         self.analyze_loaded_csv();
                     }

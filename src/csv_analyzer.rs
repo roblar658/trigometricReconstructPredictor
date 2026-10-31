@@ -526,8 +526,8 @@ pub fn identify_function_from_data(
             let mut harm_terms: Vec<(TrigKind, u32)> = Vec::new();
             let mut h = 1;
             // Utvid harmoniske frekvenser opp til fysisk Nyquist (inntil 8000 Hz) for å fange dype spisser helt opp til R² ~ 1
-            let harmonic_upper_limit = nyquist_k.min(8000).max(effective_max_n);
-            while h * best_f0 <= harmonic_upper_limit && harm_terms.len() < 180 {
+            let harmonic_upper_limit = nyquist_k.max(effective_max_n);
+            while h * best_f0 <= harmonic_upper_limit && harm_terms.len() < 250 {
                 let f = h * best_f0;
                 let idx = (f - 1) as usize;
                 let has_energy = if idx < spectrum.len() {
@@ -556,7 +556,7 @@ pub fn identify_function_from_data(
                     // Eksakt tilpasning (maksimal R²)
                     let exact_terms: Vec<TrigTerm> = harm_terms.iter().zip(coeffs)
                         .filter_map(|(&(kind, f), &c)| {
-                            let rounded = (c * 10_000.0).round() / 10_000.0;
+                            let rounded = (c * 100_000.0).round() / 100_000.0;
                             if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                         })
                         .collect();
@@ -601,7 +601,7 @@ pub fn identify_function_from_data(
                         if let Some(irls_c) = solve_least_squares(&harm_cols, &y_vec, Some(&irls_weights)) {
                             let irls_terms: Vec<TrigTerm> = harm_terms.iter().zip(&irls_c)
                                 .filter_map(|(&(kind, f), &c)| {
-                                    let rounded = (c * 10_000.0).round() / 10_000.0;
+                                    let rounded = (c * 100_000.0).round() / 100_000.0;
                                     if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                                 })
                                 .collect();
@@ -617,7 +617,7 @@ pub fn identify_function_from_data(
                     if let Some(spk_coeffs) = solve_least_squares(&harm_cols, &y_vec, Some(sw)) {
                         let spk_terms: Vec<TrigTerm> = harm_terms.iter().zip(&spk_coeffs)
                             .filter_map(|(&(kind, f), &c)| {
-                                let rounded = (c * 10_000.0).round() / 10_000.0;
+                                let rounded = (c * 100_000.0).round() / 100_000.0;
                                 if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                             })
                             .collect();
@@ -688,7 +688,7 @@ pub fn identify_function_from_data(
             if let Some(ref c_fit) = solved_c_fit {
                 let exact_peaks: Vec<TrigTerm> = peak_terms.iter().zip(c_fit)
                     .filter_map(|(&(kind, f), &c)| {
-                        let rounded = (c * 10_000.0).round() / 10_000.0;
+                        let rounded = (c * 100_000.0).round() / 100_000.0;
                         if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                     })
                     .collect();
@@ -729,7 +729,7 @@ pub fn identify_function_from_data(
                     if let Some(irls_c) = solve_least_squares(&peak_cols, &y_vec, Some(&irls_w)) {
                         let irls_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&irls_c)
                             .filter_map(|(&(kind, f), &c)| {
-                                let rounded = (c * 10_000.0).round() / 10_000.0;
+                                let rounded = (c * 100_000.0).round() / 100_000.0;
                                 if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                             })
                             .collect();
@@ -745,7 +745,7 @@ pub fn identify_function_from_data(
                 if let Some(spk_c) = solve_least_squares(&peak_cols, &y_vec, Some(sw)) {
                     let spk_peaks: Vec<TrigTerm> = peak_terms.iter().zip(&spk_c)
                         .filter_map(|(&(kind, f), &c)| {
-                            let rounded = (c * 10_000.0).round() / 10_000.0;
+                            let rounded = (c * 100_000.0).round() / 100_000.0;
                             if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                         })
                         .collect();
@@ -819,7 +819,7 @@ pub fn identify_function_from_data(
             if let Some(c_fit) = solve_least_squares(&comp_cols, &y_vec, Some(&weights)) {
                 let re_fitted: Vec<TrigTerm> = significant_components.iter().zip(&c_fit)
                     .filter_map(|(&(kind, f, _), &c)| {
-                        let rounded = (c * 10_000.0).round() / 10_000.0;
+                        let rounded = (c * 100_000.0).round() / 100_000.0;
                         if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, f, rounded)) } else { None }
                     })
                     .collect();
@@ -944,7 +944,7 @@ pub fn identify_function_from_data(
 
             let fitted_terms: Vec<TrigTerm> = selected_terms.iter().zip(&coeffs)
                 .filter_map(|(&(kind, freq), &c)| {
-                    let rounded = (c * 10_000.0).round() / 10_000.0;
+                    let rounded = (c * 100_000.0).round() / 100_000.0;
                     if rounded.abs() > 1e-6 { Some(TrigTerm::new(kind, freq, rounded)) } else { None }
                 })
                 .collect();
