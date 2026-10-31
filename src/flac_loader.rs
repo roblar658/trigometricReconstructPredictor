@@ -256,7 +256,7 @@ mod tests {
         if path.exists() {
             let opts = FlacExtractionOptions {
                 max_points: 2000,
-                start_seconds: 0.1,
+                start_seconds: 0.0,
                 duration_seconds: None,
                 time_as_hz_radians: true,
             };
@@ -286,7 +286,7 @@ mod tests {
         if path.exists() {
             let opts = FlacExtractionOptions {
                 max_points: 2000,
-                start_seconds: 0.1,
+                start_seconds: 0.0,
                 duration_seconds: None,
                 time_as_hz_radians: true,
             };

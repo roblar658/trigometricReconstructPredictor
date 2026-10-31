@@ -457,45 +457,71 @@ pub fn identify_function_from_data(
     // Finner den underliggende grunnfrekvensen F0 og tilpasser alle signifikante harmoniske overtoner
     // -------------------------------------------------------------
     if effective_max_n >= 2 && max_spectral_power > 1e-9 {
-        let max_search_f0 = 600u32.min(effective_max_n / 2).max(1);
-        let mut best_f0 = 1u32;
+        let min_search_f0 = if effective_max_n >= 200 { 15u32 } else { 1u32 };
+        let max_search_f0 = 800u32.min(effective_max_n / 2).max(min_search_f0);
+        let mut best_f0 = min_search_f0;
         let mut best_f0_score = -1.0f64;
 
-        for f0 in 1..=max_search_f0 {
-            let mut score = 0.0;
+        for f0 in min_search_f0..=max_search_f0 {
+            let mut tot_energy = 0.0;
             let mut h = 1;
             while h * f0 <= effective_max_n {
                 let idx = (h * f0 - 1) as usize;
-                score += spectrum[idx].power;
+                tot_energy += spectrum[idx].power;
                 h += 1;
             }
-            if score > best_f0_score {
-                best_f0_score = score;
+            let h_count = (h - 1) as f64;
+            if h_count < 2.0 {
+                continue;
+            }
+            // Normaliser mot antall harmoniske ledd slik at lave frekvenser med tusenvis av ledd ikke stjeler seieren
+            let norm_score = tot_energy / h_count.powf(0.35);
+            if norm_score > best_f0_score {
+                best_f0_score = norm_score;
                 best_f0 = f0;
             }
         }
 
-        // Subharmonisk disambiguering (f.eks. sjekk om 2*F0 eller 3*F0 har nesten identisk energi)
-        for mult in [2, 3] {
-            let cand = best_f0 * mult;
-            if cand <= max_search_f0 {
-                let mut cand_score = 0.0;
-                let mut h = 1;
-                while h * cand <= effective_max_n {
-                    let idx = (h * cand - 1) as usize;
-                    cand_score += spectrum[idx].power;
-                    h += 1;
-                }
-                if cand_score > 0.85 * best_f0_score {
-                    best_f0 = cand;
-                    best_f0_score = cand_score;
-                    break;
+        // Subharmonisk oppløsning (f.eks. hvis F0 ble funnet ved en sterk formant som 520 Hz,
+        // undersøk om f0 / 4 = 130 Hz, f0 / 3, eller f0 / 2 har signifikant energi i overtonene)
+        for div in [4, 3, 2] {
+            if best_f0 % div == 0 {
+                let sub_f0 = best_f0 / div;
+                if sub_f0 >= min_search_f0 {
+                    let mut tot_sub = 0.0;
+                    let mut h = 1;
+                    while h * sub_f0 <= effective_max_n {
+                        let idx = (h * sub_f0 - 1) as usize;
+                        tot_sub += spectrum[idx].power;
+                        h += 1;
+                    }
+                    let mut tot_orig = 0.0;
+                    let mut h_orig = 1;
+                    while h_orig * best_f0 <= effective_max_n {
+                        let idx = (h_orig * best_f0 - 1) as usize;
+                        tot_orig += spectrum[idx].power;
+                        h_orig += 1;
+                    }
+                    let odd_energy = tot_sub - tot_orig;
+                    if odd_energy > 0.08 * tot_orig {
+                        best_f0 = sub_f0;
+                        break;
+                    }
                 }
             }
         }
 
+        // Beregn den totale harmoniske energien for best_f0
+        let mut best_harm_energy = 0.0;
+        let mut h_check = 1;
+        while h_check * best_f0 <= effective_max_n {
+            let idx = (h_check * best_f0 - 1) as usize;
+            best_harm_energy += spectrum[idx].power;
+            h_check += 1;
+        }
+
         // Hvis den harmoniske strukturen forklarer en vesentlig del av spekteret:
-        if best_f0_score > 0.20 * total_spectral_power {
+        if best_harm_energy > 0.15 * total_spectral_power {
             let p_thresh = (max_spectral_power * 1e-5).max(1e-10);
             let mut harm_terms: Vec<(TrigKind, u32)> = Vec::new();
             let mut h = 1;

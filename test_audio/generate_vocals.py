@@ -230,10 +230,10 @@ def synthesize_vowel(formants, duration=DURATION, sr=SAMPLE_RATE, f0=MALE_F0):
         amp *= (1.0 / np.sqrt(h))
         signal += amp * np.sin(2.0 * np.pi * freq * t)
 
-    # Fade-in og fade-out for å eliminere klikk og gi naturlig tale-inngang (40 ms)
+    # Fade-out kun ved filslutt (siste 40 ms) for å eliminere klikk ved avslutning.
+    # Starten (t=0) er ren og harmonisk stasjonær da alle ledd har sin(0) = 0.
     fade_len = int(0.04 * sr)
     envelope = np.ones_like(t)
-    envelope[:fade_len] = np.sin(np.linspace(0, np.pi / 2, fade_len))**2
     envelope[-fade_len:] = np.cos(np.linspace(0, np.pi / 2, fade_len))**2
     signal *= envelope
 
