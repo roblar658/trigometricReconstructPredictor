@@ -679,14 +679,15 @@ pub fn identify_function_from_data(
     // 2. Sekundært: Ved lik R² (forskjell <= 0.0001), velg færrest ledd (Occam's razor mot overtilpasning)
     // 3. Tertiært: Lavest RMSE og maks feil
     evaluated_candidates.sort_by(|a, b| {
-        let r2_diff = b.r_squared - a.r_squared;
-        if r2_diff.abs() > 1e-4 {
-            b.r_squared.partial_cmp(&a.r_squared).unwrap_or(std::cmp::Ordering::Equal)
-        } else {
-            a.function.terms.len().cmp(&b.function.terms.len())
-                .then_with(|| a.rmse.partial_cmp(&b.rmse).unwrap_or(std::cmp::Ordering::Equal))
-                .then_with(|| a.max_error.partial_cmp(&b.max_error).unwrap_or(std::cmp::Ordering::Equal))
-        }
+        // Diskrete bøtter for R² (trinn på 0.0001) for å garantere total ordning uten brudd på transitivitet
+        let bucket_a = (a.r_squared * 10_000.0).round() as i64;
+        let bucket_b = (b.r_squared * 10_000.0).round() as i64;
+
+        bucket_b.cmp(&bucket_a)
+            .then_with(|| a.function.terms.len().cmp(&b.function.terms.len()))
+            .then_with(|| a.rmse.partial_cmp(&b.rmse).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.max_error.partial_cmp(&b.max_error).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.function.format_expr().cmp(&b.function.format_expr()))
     });
 
     let best_match = evaluated_candidates

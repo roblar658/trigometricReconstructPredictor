@@ -658,11 +658,36 @@ cargo run -- analyze-csv min_data.csv --pdf csv_rapport.pdf
 # Analyser en FLAC-lydfil direkte, eksporter til CSV og lagre PDF-rapport
 cargo run -- analyze-flac lyd.flac --export-csv lyd.csv --pdf lyd_rapport.pdf
 
-# Kjør alle automatiserte enhetstester
-cargo test
+# Kjør alle automatiserte enhetstester (-j 1 anbefales for skånsomt minnebruk)
+cargo test -j 1
 ```
 
-### D. MSI-Installasjonspakke (Windows Installer):
+### D. Test-Lydfiler for Vokaler (FLAC & Fonetiske Formanter):
+Prosjektet leveres med et komplett sett syntetiserte, tapsfrie testlydfiler for samtlige 9 norske vokaler under [`test_audio/vocals/`](test_audio/vocals/) (se full dokumentasjon i [`test_audio/README.md`](test_audio/README.md)):
+
+* **Individuelle Vokalfiler** (16 kHz, 16-bit PCM mono, $F_0 = 130$ Hz):
+  * **A** (`vocal_a.flac`): $F_1=730, F_2=1090, F_3=2440$ Hz
+  * **E** (`vocal_e.flac`): $F_1=530, F_2=1840, F_3=2480$ Hz
+  * **I** (`vocal_i.flac`): $F_1=270, F_2=2290, F_3=3010$ Hz
+  * **O** (`vocal_o.flac`): $F_1=570, F_2=840, F_3=2410$ Hz
+  * **U** (`vocal_u.flac`): $F_1=300, F_2=870, F_3=2240$ Hz
+  * **Y** (`vocal_y.flac`): $F_1=270, F_2=1900, F_3=2800$ Hz
+  * **Æ** (`vocal_ae.flac` / `vocal_æ.flac`): $F_1=660, F_2=1720, F_3=2410$ Hz
+  * **Ø** (`vocal_oe.flac` / `vocal_ø.flac`): $F_1=500, F_2=1500, F_3=2300$ Hz
+  * **Å** (`vocal_aa.flac` / `vocal_å.flac`): $F_1=510, F_2=900, F_3=2500$ Hz
+* **Sammensatt Testsekvens** ([`all_vocals_sequence.flac`](test_audio/vocals/all_vocals_sequence.flac), 21,15s):
+  * Inneholder alle 9 vokalene i rekkefølge adskilt med 350 ms stillhet.
+  * Ideell for testing av **interaktiv sub-områdemarkering (`[minX, maxX]`) og zooming** i Fane 2 (CSV & FLAC).
+* **CLI-hurtigtest for vokaler**:
+  ```bash
+  # Analyser vokal A direkte:
+  cargo run -- analyze-flac "test_audio/vocals/vocal_a.flac" --plot true
+
+  # Analyser vokal E isolert fra sekvensfilen ved starttidspunkt 2.35 sekunder:
+  cargo run -- analyze-flac "test_audio/vocals/all_vocals_sequence.flac" --start-seconds 2.35 --max-points 2000
+  ```
+
+### E. MSI-Installasjonspakke (Windows Installer):
 Klar-til-bruk installasjonsfil finnes i mappen `install/`:
 * **Installasjonsfil**: [`install/TrigonometriskEkstremanalyse-Setup-v1.1.0.msi`](install/TrigonometriskEkstremanalyse-Setup-v1.1.0.msi)
 

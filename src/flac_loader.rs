@@ -249,5 +249,34 @@ mod tests {
             let _ = std::fs::remove_file(csv_path);
         }
     }
+
+    #[test]
+    fn test_read_synthesized_vocal_flac() {
+        let path = Path::new("test_audio/vocals/vocal_a.flac");
+        if path.exists() {
+            let opts = FlacExtractionOptions {
+                max_points: 2000,
+                start_seconds: 0.1,
+                duration_seconds: None,
+                time_as_hz_radians: true,
+            };
+
+            let (meta, pts) = read_flac_data(path, &opts).unwrap();
+            assert_eq!(meta.sample_rate, 16000);
+            assert_eq!(meta.channels, 1);
+            assert!(pts.len() >= 1000);
+
+            let res = crate::csv_analyzer::identify_function_from_data(&pts, 1000).unwrap();
+            assert!(res.best_match.r_squared > 0.60);
+
+            // Sjekk at minst en av de fundamentale harmoniske (130, 260, 390, 520, 650, 780 Hz) ble funnet
+            let freqs: Vec<u32> = res.best_match.function.terms.iter().map(|t| t.freq).collect();
+            assert!(
+                freqs.iter().any(|&f| f % 130 == 0 || (f as i32 - 130).abs() <= 5),
+                "Fant ikke forventede harmoniske komponenter for vokal A: {:?}",
+                freqs
+            );
+        }
+    }
 }
 

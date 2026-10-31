@@ -1,0 +1,155 @@
+{
+  "a": {
+    "name": "Vokal A",
+    "ipa": "ɑ",
+    "example": "som i 'bra' / 'far'",
+    "filename": "vocal_a.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_a.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      730,
+      1090,
+      2440
+    ]
+  },
+  "e": {
+    "name": "Vokal E",
+    "ipa": "e",
+    "example": "som i 'se' / 'bed'",
+    "filename": "vocal_e.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_e.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      530,
+      1840,
+      2480
+    ]
+  },
+  "i": {
+    "name": "Vokal I",
+    "ipa": "i",
+    "example": "som i 'si' / 'bee'",
+    "filename": "vocal_i.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_i.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      270,
+      2290,
+      3010
+    ]
+  },
+  "o": {
+    "name": "Vokal O",
+    "ipa": "u",
+    "example": "som i 'mor' / 'boat'",
+    "filename": "vocal_o.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_o.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      570,
+      840,
+      2410
+    ]
+  },
+  "u": {
+    "name": "Vokal U",
+    "ipa": "ʉ",
+    "example": "som i 'sol' / 'boot'",
+    "filename": "vocal_u.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_u.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      300,
+      870,
+      2240
+    ]
+  },
+  "y": {
+    "name": "Vokal Y",
+    "ipa": "y",
+    "example": "som i 'lys' / 'über'",
+    "filename": "vocal_y.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_y.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      270,
+      1900,
+      2800
+    ]
+  },
+  "ae": {
+    "name": "Vokal Æ",
+    "ipa": "æ",
+    "example": "som i 'bær' / 'cat'",
+    "filename": "vocal_ae.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_ae.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      660,
+      1720,
+      2410
+    ]
+  },
+  "oe": {
+    "name": "Vokal Ø",
+    "ipa": "ø",
+    "example": "som i 'dør' / 'schön'",
+    "filename": "vocal_oe.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_oe.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      500,
+      1500,
+      2300
+    ]
+  },
+  "aa": {
+    "name": "Vokal Å",
+    "ipa": "ɔ",
+    "example": "som i 'båt' / 'thought'",
+    "filename": "vocal_aa.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\vocal_aa.flac",
+    "sample_rate": 16000,
+    "duration_sec": 2.0,
+    "f0_hz": 130.0,
+    "formants_hz": [
+      510,
+      900,
+      2500
+    ]
+  },
+  "all_sequence": {
+    "name": "Alle vokaler i sekvens",
+    "filename": "all_vocals_sequence.flac",
+    "path": "C:\\dev\\gpu_extrema_classifier\\test_audio\\vocals\\all_vocals_sequence.flac",
+    "sample_rate": 16000,
+    "total_duration_sec": 21.15,
+    "vowels_order": [
+      "a",
+      "e",
+      "i",
+      "o",
+      "u",
+      "y",
+      "ae",
+      "oe",
+      "aa"
+    ]
+  }
+}
