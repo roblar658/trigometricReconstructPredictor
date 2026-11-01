@@ -552,7 +552,7 @@ impl RealtimeServiceController {
         let max_terms = st.max_terms;
         let status = st.fitter.solve_model(max_terms);
         st.latest_status = status.clone();
-        st.log(format!("Mottok punkt ({:.3}, {:.3}) -> N={}", x, y, status.count));
+        st.log(format!("Mottok punkt ({:.3}, {:.3}) -> N={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"", x, y, status.count, status.terms_count, status.r_squared, status.rmse, status.formula));
         status
     }
 
@@ -563,7 +563,7 @@ impl RealtimeServiceController {
         let max_terms = st.max_terms;
         let status = st.fitter.solve_model(max_terms);
         st.latest_status = status.clone();
-        st.log(format!("Mottok batch på {} punkter -> N={}", added, status.count));
+        st.log(format!("Mottok batch på {} punkter -> N={}, added={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"", added, status.count, added, status.terms_count, status.r_squared, status.rmse, status.formula));
         status
     }
 
@@ -959,7 +959,7 @@ fn handle_client(
                         let max_terms = st.max_terms;
                         let s = st.fitter.solve_model(max_terms);
                         st.latest_status = s.clone();
-                        st.log(format!("Mottok 1 tilfeldig verdi ({:.3}, {:.3}) -> N={}", x, y, s.count));
+                        st.log(format!("Mottok 1 tilfeldig verdi ({:.3}, {:.3}) -> N={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"", x, y, s.count, s.terms_count, s.r_squared, s.rmse, s.formula));
                         (s, x, y)
                     };
                     let resp = format!(
@@ -982,7 +982,7 @@ fn handle_client(
                         let max_terms = st.max_terms;
                         let s = st.fitter.solve_model(max_terms);
                         st.latest_status = s.clone();
-                        st.log(format!("Mottok 2 tilfeldige verdier -> N={}", s.count));
+                        st.log(format!("Mottok 2 tilfeldige verdier -> N={}, added=2, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"", s.count, s.terms_count, s.r_squared, s.rmse, s.formula));
                         s
                     };
                     let resp = format!(
@@ -1005,7 +1005,7 @@ fn handle_client(
                         let max_terms = st.max_terms;
                         let s = st.fitter.solve_model(max_terms);
                         st.latest_status = s.clone();
-                        st.log(format!("Mottok 3 tilfeldige verdier -> N={}", s.count));
+                        st.log(format!("Mottok 3 tilfeldige verdier -> N={}, added=3, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"", s.count, s.terms_count, s.r_squared, s.rmse, s.formula));
                         s
                     };
                     let resp = format!(
@@ -1051,14 +1051,18 @@ fn handle_client(
                                 let max_terms = st.max_terms;
                                 let s = st.fitter.solve_model(max_terms);
                                 st.latest_status = s.clone();
+                                st.log(format!(
+                                    "Mottok batch på {} punkter fra {} -> N={}, added={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                                    batch_points.len(), peer_addr, s.count, batch_points.len(), s.terms_count, s.r_squared, s.rmse, s.formula
+                                ));
                                 s
                             } else {
                                 RealtimeModelStatus::default()
                             };
 
                             let resp = format!(
-                                "{{\"status\":\"ok\",\"count\":{},\"added\":{},\"fx\":\"{}\",\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
-                                status.count, batch_points.len(), status.formula, status.r_squared, status.rmse
+                                "{{\"status\":\"ok\",\"count\":{},\"added\":{},\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                                status.count, batch_points.len(), status.formula, status.terms_count, status.r_squared, status.rmse
                             );
                             let _ = stream.write_all(resp.as_bytes());
                         } else {
@@ -1082,14 +1086,18 @@ fn handle_client(
                             let max_terms = st.max_terms;
                             let s = st.fitter.solve_model(max_terms);
                             st.latest_status = s.clone();
+                            st.log(format!(
+                                "Mottok batch på {} punkter fra {} -> N={}, added={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                                points.len(), peer_addr, s.count, points.len(), s.terms_count, s.r_squared, s.rmse, s.formula
+                            ));
                             s
                         } else {
                             RealtimeModelStatus::default()
                         };
 
                         let resp = format!(
-                            "{{\"status\":\"ok\",\"count\":{},\"added\":{},\"fx\":\"{}\",\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
-                            status.count, points.len(), status.formula, status.r_squared, status.rmse
+                            "{{\"status\":\"ok\",\"count\":{},\"added\":{},\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                            status.count, points.len(), status.formula, status.terms_count, status.r_squared, status.rmse
                         );
                         let _ = stream.write_all(resp.as_bytes());
                         continue;
@@ -1103,6 +1111,10 @@ fn handle_client(
                         let max_terms = st.max_terms;
                         let s = st.fitter.solve_model(max_terms);
                         st.latest_status = s.clone();
+                        st.log(format!(
+                            "Mottok punkt ({:.3}, {:.3}) fra {} -> N={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                            x, y, peer_addr, s.count, s.terms_count, s.r_squared, s.rmse, s.formula
+                        ));
                         s
                     } else {
                         RealtimeModelStatus::default()

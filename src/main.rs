@@ -2,6 +2,7 @@ mod classification;
 mod csv_analyzer;
 pub mod flac_loader;
 mod gpu;
+pub mod poly_log_simplifier;
 pub mod realtime_service;
 mod model;
 mod patterns;

@@ -21,6 +21,7 @@ pub enum ActiveTab {
     Classifier,
     CsvAnalysis,
     RealtimeService,
+    PolyLogConverter,
     Help,
 }
 
@@ -142,6 +143,23 @@ pub struct ExtremaApp {
     pub service_random_uniform: bool,
     pub service_status_msg: Option<String>,
     pub service_error_msg: Option<String>,
+    pub service_enable_mouse_zoom: bool,
+    pub service_plot_bounds_request: Option<[f64; 4]>,
+    pub service_current_bounds: Option<[f64; 4]>,
+
+    // Fane 4: Polynom & Log-forenkler (cos/sin -> polynom og log, f.eks. x^2 + log(x))
+    pub poly_log_input: String,
+    pub poly_log_a: f64,
+    pub poly_log_b: f64,
+    pub poly_log_degree: usize,
+    pub poly_log_include_ln: bool,
+    pub poly_log_include_x_ln: bool,
+    pub poly_log_include_inv_x: bool,
+    pub poly_log_result: Option<crate::poly_log_simplifier::PolyLogSimplifierResult>,
+    pub poly_log_error: Option<String>,
+    pub poly_log_plot_bounds_request: Option<[f64; 4]>,
+    pub poly_log_current_bounds: Option<[f64; 4]>,
+    pub poly_log_enable_mouse_zoom: bool,
 }
 
 impl Default for ExtremaApp {
@@ -226,6 +244,22 @@ impl Default for ExtremaApp {
             service_random_uniform: false,
             service_status_msg: None,
             service_error_msg: None,
+            service_enable_mouse_zoom: true,
+            service_plot_bounds_request: None,
+            service_current_bounds: None,
+
+            poly_log_input: "sin(x) + cos(2x)".to_string(),
+            poly_log_a: 0.5,
+            poly_log_b: 6.28,
+            poly_log_degree: 2,
+            poly_log_include_ln: true,
+            poly_log_include_x_ln: false,
+            poly_log_include_inv_x: false,
+            poly_log_result: None,
+            poly_log_error: None,
+            poly_log_plot_bounds_request: None,
+            poly_log_current_bounds: None,
+            poly_log_enable_mouse_zoom: true,
         };
 
         app.run_gpu_analysis();
@@ -856,6 +890,14 @@ impl eframe::App for ExtremaApp {
                 self.tab = ActiveTab::RealtimeService;
             }
 
+            let tab_poly = ui.selectable_label(
+                self.tab == ActiveTab::PolyLogConverter,
+                RichText::new("📐 Polynom & Log").strong().size(13.0),
+            );
+            if tab_poly.clicked() {
+                self.tab = ActiveTab::PolyLogConverter;
+            }
+
             let tab_help = ui.selectable_label(
                 self.tab == ActiveTab::Help,
                 RichText::new("❓ Hjelp").strong().size(13.0),
@@ -888,6 +930,11 @@ impl eframe::App for ExtremaApp {
             ActiveTab::RealtimeService => {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.render_service_tab(ui, &theme);
+                });
+            }
+            ActiveTab::PolyLogConverter => {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.render_poly_log_tab(ui, &theme);
                 });
             }
             ActiveTab::Help => {
@@ -2007,8 +2054,8 @@ impl ExtremaApp {
                         self.service_test_y = y;
                         let st = self.service_controller.push_point(x, y);
                         self.service_status_msg = Some(format!(
-                            "Mottok 1 verdi: ({:.2}, {:.2}). Nå N={}, f(x)={}",
-                            x, y, st.count, st.formula
+                            "Mottok punkt ({:.3}, {:.3}) -> N={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                            x, y, st.count, st.terms_count, st.r_squared, st.rmse, st.formula
                         ));
                     }
 
@@ -2032,8 +2079,8 @@ impl ExtremaApp {
                         }
                         let st = self.service_controller.push_batch(&pts);
                         self.service_status_msg = Some(format!(
-                            "Mottok 2 verdier. Nå N={}, f(x)={}",
-                            st.count, st.formula
+                            "Mottok 2 verdier -> N={}, added=2, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                            st.count, st.terms_count, st.r_squared, st.rmse, st.formula
                         ));
                     }
 
@@ -2057,8 +2104,8 @@ impl ExtremaApp {
                         }
                         let st = self.service_controller.push_batch(&pts);
                         self.service_status_msg = Some(format!(
-                            "Mottok 3 verdier. Nå N={}, f(x)={}",
-                            st.count, st.formula
+                            "Mottok 3 verdier -> N={}, added=3, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                            st.count, st.terms_count, st.r_squared, st.rmse, st.formula
                         ));
                     }
 
@@ -2082,8 +2129,8 @@ impl ExtremaApp {
                         }
                         let st = self.service_controller.push_batch(&pts);
                         self.service_status_msg = Some(format!(
-                            "Mottok batch på 10 punkter. Nå N={}, f(x)={}",
-                            st.count, st.formula
+                            "Mottok batch på 10 punkter -> N={}, added=10, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                            st.count, st.terms_count, st.r_squared, st.rmse, st.formula
                         ));
                     }
 
@@ -2102,8 +2149,8 @@ impl ExtremaApp {
                     if ui.button("Send (x,y)").clicked() {
                         let st = self.service_controller.push_point(self.service_test_x, self.service_test_y);
                         self.service_status_msg = Some(format!(
-                            "Mottok ({:.3}, {:.3}). Nå N={}, f(x)={}",
-                            self.service_test_x, self.service_test_y, st.count, st.formula
+                            "Mottok punkt ({:.3}, {:.3}) -> N={}, terms={}, R²={:.6}, RMSE={:.6}, fx=\"{}\"",
+                            self.service_test_x, self.service_test_y, st.count, st.terms_count, st.r_squared, st.rmse, st.formula
                         ));
                     }
 
@@ -2123,7 +2170,7 @@ impl ExtremaApp {
 
                 if let Some(msg) = &self.service_status_msg {
                     ui.add_space(2.0);
-                    ui.label(RichText::new(msg).color(theme.text_accent).size(11.5));
+                    ui.add(egui::Label::new(RichText::new(msg).color(theme.text_accent).size(11.5)).wrap());
                 }
                 if let Some(err) = &self.service_error_msg {
                     ui.add_space(2.0);
@@ -2133,18 +2180,83 @@ impl ExtremaApp {
 
         ui.add_space(5.0);
 
-        // --- 5. SANNTIDS PLOT (SENSORDATA & ESTIMERT f(x)) ---
+        // --- 5. SANNTIDS PLOT (SENSORDATA & ESTIMERT f(x)) MED FULL ZOOM OG PAN ---
+        let mut zoom_in_req = false;
+        let mut zoom_out_req = false;
+        let mut reset_zoom_req = false;
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("📈 Sanntidsgraf:").strong().color(theme.text_accent).size(12.5));
+
+            if ui.button("🔍+ Zoom inn").on_hover_text("Zoom 30% inn på midten av sanntidsgrafen").clicked() {
+                zoom_in_req = true;
+            }
+            if ui.button("🔍- Zoom ut").on_hover_text("Zoom 40% ut fra midten av sanntidsgrafen").clicked() {
+                zoom_out_req = true;
+            }
+            if ui.button("↺ Autotilpass zoom").on_hover_text("Tilpass visningen automatisk til alle mottatte sensorpunkter").clicked() {
+                reset_zoom_req = true;
+            }
+
+            ui.separator();
+
+            ui.checkbox(&mut self.service_enable_mouse_zoom, "Mus-zoom")
+                .on_hover_text("Når aktivert: Rull på musehjulet for å zoome inn/ut. Du kan også dra med musen for å panorere, eller holde inne høyre musetast for boks-zoom.");
+        });
+
+        if zoom_in_req {
+            if let Some([bx0, by0, bx1, by1]) = self.service_current_bounds {
+                let mid_x = (bx0 + bx1) / 2.0;
+                let span_x = (bx1 - bx0) * 0.70;
+                let mid_y = (by0 + by1) / 2.0;
+                let span_y = (by1 - by0) * 0.70;
+                self.service_plot_bounds_request = Some([mid_x - span_x / 2.0, mid_y - span_y / 2.0, mid_x + span_x / 2.0, mid_y + span_y / 2.0]);
+            }
+        } else if zoom_out_req {
+            if let Some([bx0, by0, bx1, by1]) = self.service_current_bounds {
+                let mid_x = (bx0 + bx1) / 2.0;
+                let span_x = (bx1 - bx0) * 1.40;
+                let mid_y = (by0 + by1) / 2.0;
+                let span_y = (by1 - by0) * 1.40;
+                self.service_plot_bounds_request = Some([mid_x - span_x / 2.0, mid_y - span_y / 2.0, mid_x + span_x / 2.0, mid_y + span_y / 2.0]);
+            }
+        } else if reset_zoom_req {
+            if !recent_points.is_empty() {
+                let min_x = recent_points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+                let max_x = recent_points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+                let min_y = recent_points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+                let max_y = recent_points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+                let span_x = (max_x - min_x).abs().max(1.0);
+                let span_y = (max_y - min_y).abs().max(0.5);
+                let pad_x = span_x * 0.10;
+                let pad_y = span_y * 0.15;
+                self.service_plot_bounds_request = Some([min_x - pad_x, min_y - pad_y, max_x + pad_x, max_y + pad_y]);
+            } else {
+                self.service_plot_bounds_request = Some([0.0, -2.5, TAU, 2.5]);
+            }
+        }
+
+        let bounds_req = self.service_plot_bounds_request.take();
+        let mut updated_bounds = None;
+
         let plot_height = 230.0;
         let plot = Plot::new("realtime_service_plot")
             .height(plot_height)
             .show_grid(true)
             .allow_drag(true)
             .allow_zoom(true)
-            .allow_scroll(true)
+            .allow_boxed_zoom(true)
+            .allow_scroll(self.service_enable_mouse_zoom)
             .x_axis_label("x (sensor-tid / fase)")
             .y_axis_label("y (sensorverdi)");
 
         plot.show(ui, |plot_ui| {
+            if let Some([bx0, by0, bx1, by1]) = bounds_req {
+                plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max([bx0, by0], [bx1, by1]));
+            }
+            let b = plot_ui.plot_bounds();
+            updated_bounds = Some([b.min()[0], b.min()[1], b.max()[0], b.max()[1]]);
+
             if !recent_points.is_empty() {
                 let pts: Vec<[f64; 2]> = recent_points.iter().map(|&(x, y)| [x, y]).collect();
                 plot_ui.points(
@@ -2178,17 +2290,31 @@ impl ExtremaApp {
             }
         });
 
+        if let Some(b) = updated_bounds {
+            self.service_current_bounds = Some(b);
+        }
+
         ui.add_space(5.0);
 
-        // --- 6. TO-KOLONNE BUNNOMRÅDE: LOGG & PROTOKOLLGUIDE ---
+        // --- 6. TO-KOLONNE BUNNOMRÅDE: LOGG & PROTOKOLLGUIDE (MED FAST BREDDE OG LINJESPLIT) ---
+        let available_w = ui.available_width();
+        let col_w = ((available_w - 12.0) * 0.5).floor().max(200.0);
+
         ui.columns(2, |cols| {
-            // Kolonne 1: Aktivitets- og Sikkerhetslogg
+            // Kolonne 1: Aktivitets- og Sikkerhetslogg (fast bredde slik at den ikke endrer størrelse)
+            cols[0].set_width(col_w);
+            cols[0].set_max_width(col_w);
+
             egui::Frame::new()
                 .fill(theme.bg_card)
                 .stroke(theme.border_stroke)
                 .inner_margin(8)
                 .corner_radius(6)
                 .show(&mut cols[0], |ui| {
+                    ui.set_width(col_w - 16.0);
+                    ui.set_max_width(col_w - 16.0);
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("📋 Aktivitets- og Sikkerhetslogg").strong().color(theme.text_primary).size(12.5));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2207,23 +2333,33 @@ impl ExtremaApp {
                         .max_height(140.0)
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            ui.set_width(col_w - 24.0);
+                            ui.set_max_width(col_w - 24.0);
+                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+
                             if log_messages.is_empty() {
                                 ui.label(RichText::new("(Ingen hendelser ennå. Start tjenesten eller send testverdier.)").color(theme.text_secondary).size(11.0));
                             } else {
                                 for line in log_messages.iter().rev() {
-                                    ui.label(RichText::new(line).monospace().size(11.0).color(theme.text_secondary));
+                                    // Splitter mellom linjer automatisk når nødvendig (f.eks. ved lange batch-meldinger)
+                                    ui.add(egui::Label::new(RichText::new(line).monospace().size(11.0).color(theme.text_secondary)).wrap());
                                 }
                             }
                         });
                 });
 
-            // Kolonne 2: Sikkerhet & Terminal-tilgang
+            // Kolonne 2: Sikkerhet & Terminal-tilgang (fast bredde)
+            cols[1].set_width(col_w);
+            cols[1].set_max_width(col_w);
+
             egui::Frame::new()
                 .fill(theme.bg_card)
                 .stroke(theme.border_stroke)
                 .inner_margin(8)
                 .corner_radius(6)
                 .show(&mut cols[1], |ui| {
+                    ui.set_width(col_w - 16.0);
+                    ui.set_max_width(col_w - 16.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("🖥️ Tilgang via Terminal (TCP)").strong().color(theme.text_accent).size(12.5));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2301,6 +2437,322 @@ impl ExtremaApp {
                 ui.label("• Tekstskalering: Juster tekststørrelsen (100%, 115%, 130%) i toppmenyen etter behov.");
                 ui.label("• Skjermtilpasning: Grensesnittet er utformet slik at alt innhold passer direkte på én skjermflate uten behov for vertikal scrolling.");
             });
+    }
+
+    /// Fane: Forenkling av trigonometriske uttrykk (sin og cos) til polynom og logaritme (f.eks. x^2 + log(x))
+    fn render_poly_log_tab(&mut self, ui: &mut egui::Ui, theme: &ThemeColors) {
+        ui.heading(RichText::new("📐 Forenkling: Trigonometrisk (sin & cos) ➔ Polynom & Log").color(theme.text_accent).size(18.0));
+        ui.label(RichText::new("Tilnærmer og forenkler trigonometriske bølger til en algebraisk modell bestående av polynomer og logaritmer, f.eks. x² + log(x).").color(theme.text_secondary).size(12.0));
+
+        ui.add_space(5.0);
+
+        // 1. Inndatakort
+        egui::Frame::new()
+            .fill(theme.bg_card)
+            .stroke(theme.border_stroke)
+            .inner_margin(10)
+            .corner_radius(6)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Trigonometrisk funksjon f(x):").strong().color(theme.text_primary).size(13.0));
+                    let edit = ui.add(egui::TextEdit::singleline(&mut self.poly_log_input).desired_width(260.0));
+                    if edit.changed() {
+                        self.poly_log_result = None;
+                        self.poly_log_error = None;
+                    }
+
+                    if ui.button(RichText::new("📋 Hent fra analyse").size(11.5)).on_hover_text("Bruk den nåværende formelen fra trigonometrisk analyse").clicked() {
+                        if let Some(func) = &self.current_func {
+                            self.poly_log_input = format!("{}", func);
+                            self.poly_log_result = None;
+                        }
+                    }
+
+                    if ui.button(RichText::new("⚡ Hent fra live").size(11.5)).on_hover_text("Bruk formelen som for øyeblikket er identifisert av live-sensortjenesten").clicked() {
+                        if let Ok(st) = self.service_controller.state.read() {
+                            if !st.latest_status.formula.is_empty() && st.latest_status.formula != "f(x) = 0" {
+                                self.poly_log_input = st.latest_status.formula.replace("f(x) = ", "");
+                                self.poly_log_result = None;
+                            }
+                        }
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Hurtigvalg:").size(11.0).color(theme.text_secondary));
+                    if ui.small_button("sin(x) + cos(2x)").clicked() {
+                        self.poly_log_input = "sin(x) + cos(2x)".to_string();
+                        self.poly_log_result = None;
+                    }
+                    if ui.small_button("3*sin(2x) + cos(4x)").clicked() {
+                        self.poly_log_input = "3*sin(2x) + cos(4x)".to_string();
+                        self.poly_log_result = None;
+                    }
+                    if ui.small_button("sin(x) + 0.5*sin(3x)").clicked() {
+                        self.poly_log_input = "sin(x) + 0.5*sin(3x)".to_string();
+                        self.poly_log_result = None;
+                    }
+                    if ui.small_button("cos(x)").clicked() {
+                        self.poly_log_input = "cos(x)".to_string();
+                        self.poly_log_result = None;
+                    }
+                });
+
+                ui.separator();
+
+                // Innstillinger for basis-funksjoner og intervall
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Definisjonsområde [a, b]:").strong().color(theme.text_secondary).size(12.0));
+                    ui.add(egui::DragValue::new(&mut self.poly_log_a).speed(0.05).range(0.01..=100.0).prefix("a: "))
+                        .on_hover_text("Startverdi (må være > 0 for at log(x) skal være definert)");
+                    ui.add(egui::DragValue::new(&mut self.poly_log_b).speed(0.05).range(0.05..=100.0).prefix("b: "))
+                        .on_hover_text("Sluttverdi for tilnærmingen");
+
+                    ui.separator();
+
+                    ui.label(RichText::new("Maks polynomgrad:").strong().color(theme.text_secondary).size(12.0));
+                    ui.add(egui::Slider::new(&mut self.poly_log_degree, 1..=6).text(""))
+                        .on_hover_text("Høyeste x-potens som inkluderes (f.eks. 2 gir ledd inntil x²)");
+
+                    ui.separator();
+
+                    ui.checkbox(&mut self.poly_log_include_ln, RichText::new("log(x)").strong().color(theme.text_accent))
+                        .on_hover_text("Inkluder naturlig logaritme ln(x)");
+
+                    ui.checkbox(&mut self.poly_log_include_x_ln, "x*log(x)")
+                        .on_hover_text("Inkluder produktledd x * ln(x)");
+
+                    ui.checkbox(&mut self.poly_log_include_inv_x, "1/x")
+                        .on_hover_text("Inkluder inversledd 1/x");
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button(RichText::new("⚡ Beregn Polynom & Log").strong().color(theme.text_success).size(12.5)).clicked() {
+                            match crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                Ok(func) => {
+                                    let config = crate::poly_log_simplifier::PolyLogBasisConfig {
+                                        max_degree: self.poly_log_degree,
+                                        include_ln: self.poly_log_include_ln,
+                                        include_x_ln: self.poly_log_include_x_ln,
+                                        include_inv_x: self.poly_log_include_inv_x,
+                                        num_samples: 300,
+                                    };
+                                    match crate::poly_log_simplifier::simplify_trig_to_poly_log(&func, self.poly_log_a, self.poly_log_b, &config) {
+                                        Ok(res) => {
+                                            self.poly_log_result = Some(res);
+                                            self.poly_log_error = None;
+                                        }
+                                        Err(err) => {
+                                            self.poly_log_error = Some(err);
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    self.poly_log_error = Some(format!("Ugyldig trigonometrisk uttrykk: {}. MERK: KUN sin og cos støttes!", err));
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+
+        if let Some(err) = &self.poly_log_error {
+            ui.add_space(3.0);
+            ui.label(RichText::new(format!("❌ {}", err)).color(theme.text_error).size(12.0));
+        }
+
+        ui.add_space(5.0);
+
+        // 2. Resultat-visning
+        if let Some(res) = &self.poly_log_result {
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_accent)
+                .inner_margin(10)
+                .corner_radius(6)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Forenklet modell P(x):").strong().color(theme.text_accent).size(14.0));
+                        ui.label(RichText::new(&res.simplified_formula).monospace().strong().size(15.0).color(theme.text_primary));
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(RichText::new("📋 Kopier LaTeX").size(11.0)).clicked() {
+                                ui.ctx().copy_text(res.latex_formula.clone());
+                            }
+                            if ui.button(RichText::new("🐍 Kopier Python").size(11.0)).clicked() {
+                                ui.ctx().copy_text(res.python_formula.clone());
+                            }
+                            if ui.button(RichText::new("📋 Kopier P(x)").size(11.0)).clicked() {
+                                ui.ctx().copy_text(res.simplified_formula.clone());
+                            }
+                        });
+                    });
+                });
+
+            ui.add_space(5.0);
+
+            // KPI Grid
+            ui.columns(4, |cols| {
+                egui::Frame::new()
+                    .fill(theme.bg_card)
+                    .stroke(theme.border_stroke)
+                    .inner_margin(8)
+                    .corner_radius(6)
+                    .show(&mut cols[0], |ui| {
+                        ui.label(RichText::new("TILPASNING (R²)").size(11.0).color(theme.text_secondary));
+                        let r2_col = if res.r_squared >= 0.95 { theme.text_success } else if res.r_squared >= 0.85 { theme.text_warning } else { theme.text_error };
+                        ui.label(RichText::new(format!("{:.5}", res.r_squared)).size(20.0).strong().color(r2_col));
+                        ui.label(RichText::new("Over [a, b]").size(10.0).color(theme.text_secondary));
+                    });
+
+                egui::Frame::new()
+                    .fill(theme.bg_card)
+                    .stroke(theme.border_stroke)
+                    .inner_margin(8)
+                    .corner_radius(6)
+                    .show(&mut cols[1], |ui| {
+                        ui.label(RichText::new("RMSE FEIL").size(11.0).color(theme.text_secondary));
+                        ui.label(RichText::new(format!("{:.5}", res.rmse)).size(20.0).strong().color(theme.text_primary));
+                        ui.label(RichText::new("Rot-middel-kvadrat").size(10.0).color(theme.text_secondary));
+                    });
+
+                egui::Frame::new()
+                    .fill(theme.bg_card)
+                    .stroke(theme.border_stroke)
+                    .inner_margin(8)
+                    .corner_radius(6)
+                    .show(&mut cols[2], |ui| {
+                        ui.label(RichText::new("MAKS AVVIK").size(11.0).color(theme.text_secondary));
+                        ui.label(RichText::new(format!("{:.5}", res.max_error)).size(20.0).strong().color(theme.text_warning));
+                        ui.label(RichText::new("Største punktfeil").size(10.0).color(theme.text_secondary));
+                    });
+
+                egui::Frame::new()
+                    .fill(theme.bg_card)
+                    .stroke(theme.border_stroke)
+                    .inner_margin(8)
+                    .corner_radius(6)
+                    .show(&mut cols[3], |ui| {
+                        ui.label(RichText::new("ANTALL LEDD").size(11.0).color(theme.text_secondary));
+                        ui.label(RichText::new(format!("{}", res.terms.len())).size(20.0).strong().color(theme.text_accent));
+                        ui.label(RichText::new("Signifikante ledd").size(10.0).color(theme.text_secondary));
+                    });
+            });
+
+            ui.add_space(5.0);
+
+            // 3. Tabell over ledd og koeffisienter
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(ui, |ui| {
+                    ui.label(RichText::new("📊 Identifiserte polynom- og logaritmeledd:").strong().color(theme.text_primary).size(12.5));
+                    ui.add_space(2.0);
+
+                    egui::Grid::new("poly_log_terms_grid")
+                        .striped(true)
+                        .min_col_width(120.0)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Ledd").strong().color(theme.text_accent));
+                            ui.label(RichText::new("Type").strong().color(theme.text_accent));
+                            ui.label(RichText::new("Koeffisient").strong().color(theme.text_accent));
+                            ui.label(RichText::new("Matematisk representasjon").strong().color(theme.text_accent));
+                            ui.end_row();
+
+                            for t in &res.terms {
+                                ui.label(RichText::new(&t.name).monospace().strong());
+                                let kind = if t.is_log { "Logaritme" } else if t.power == Some(0) { "Konstant" } else { "Polynom" };
+                                ui.label(kind);
+                                ui.label(RichText::new(format!("{:.6}", t.coeff)).monospace());
+                                let expr = if t.name == "1" { format!("{:.4}", t.coeff) } else { format!("{:.4} * {}", t.coeff, t.name) };
+                                ui.label(RichText::new(expr).monospace().color(theme.text_secondary));
+                                ui.end_row();
+                            }
+                        });
+                });
+
+            ui.add_space(5.0);
+
+            // 4. Grafisk sammenligning (Plot)
+            let mut zoom_in = false;
+            let mut zoom_out = false;
+            let mut reset_zoom = false;
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("📈 Sammenligning: f(x) (sin/cos) vs P(x) (polynom+log):").strong().color(theme.text_accent).size(12.5));
+
+                if ui.button("🔍+ Zoom inn").clicked() { zoom_in = true; }
+                if ui.button("🔍- Zoom ut").clicked() { zoom_out = true; }
+                if ui.button("↺ Autotilpass zoom").clicked() { reset_zoom = true; }
+
+                ui.separator();
+                ui.checkbox(&mut self.poly_log_enable_mouse_zoom, "Mus-zoom");
+            });
+
+            if zoom_in {
+                if let Some([bx0, by0, bx1, by1]) = self.poly_log_current_bounds {
+                    let mid_x = (bx0 + bx1) / 2.0;
+                    let span_x = (bx1 - bx0) * 0.70;
+                    let mid_y = (by0 + by1) / 2.0;
+                    let span_y = (by1 - by0) * 0.70;
+                    self.poly_log_plot_bounds_request = Some([mid_x - span_x / 2.0, mid_y - span_y / 2.0, mid_x + span_x / 2.0, mid_y + span_y / 2.0]);
+                }
+            } else if zoom_out {
+                if let Some([bx0, by0, bx1, by1]) = self.poly_log_current_bounds {
+                    let mid_x = (bx0 + bx1) / 2.0;
+                    let span_x = (bx1 - bx0) * 1.40;
+                    let mid_y = (by0 + by1) / 2.0;
+                    let span_y = (by1 - by0) * 1.40;
+                    self.poly_log_plot_bounds_request = Some([mid_x - span_x / 2.0, mid_y - span_y / 2.0, mid_x + span_x / 2.0, mid_y + span_y / 2.0]);
+                }
+            } else if reset_zoom {
+                let pad_x = (res.b - res.a) * 0.08;
+                let y_min = res.orig_y.iter().copied().fold(f64::INFINITY, f64::min).min(res.approx_y.iter().copied().fold(f64::INFINITY, f64::min));
+                let y_max = res.orig_y.iter().copied().fold(f64::NEG_INFINITY, f64::max).max(res.approx_y.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                let pad_y = (y_max - y_min).abs().max(0.5) * 0.15;
+                self.poly_log_plot_bounds_request = Some([res.a - pad_x, y_min - pad_y, res.b + pad_x, y_max + pad_y]);
+            }
+
+            let bounds_req = self.poly_log_plot_bounds_request.take();
+            let mut updated_bounds = None;
+
+            let plot = Plot::new("poly_log_comparison_plot")
+                .height(240.0)
+                .show_grid(true)
+                .allow_drag(true)
+                .allow_zoom(true)
+                .allow_boxed_zoom(true)
+                .allow_scroll(self.poly_log_enable_mouse_zoom)
+                .x_axis_label("x")
+                .y_axis_label("f(x) og P(x)");
+
+            plot.show(ui, |plot_ui| {
+                if let Some([bx0, by0, bx1, by1]) = bounds_req {
+                    plot_ui.set_plot_bounds(egui_plot::PlotBounds::from_min_max([bx0, by0], [bx1, by1]));
+                }
+                let b = plot_ui.plot_bounds();
+                updated_bounds = Some([b.min()[0], b.min()[1], b.max()[0], b.max()[1]]);
+
+                // 1. Original f(x) kurve (blå)
+                let pts_orig: Vec<[f64; 2]> = res.sample_x.iter().zip(&res.orig_y).map(|(&x, &y)| [x, y]).collect();
+                plot_ui.line(Line::new("Opprinnelig f(x)", pts_orig).color(theme.text_accent).width(2.5));
+
+                // 2. Forenklet P(x) kurve (grønn/gul)
+                let pts_approx: Vec<[f64; 2]> = res.sample_x.iter().zip(&res.approx_y).map(|(&x, &y)| [x, y]).collect();
+                plot_ui.line(Line::new("Forenklet P(x) (polynom+log)", pts_approx).color(theme.text_success).width(2.5));
+
+                // 3. Feilkurve e(x) = f(x) - P(x) (rød)
+                let pts_err: Vec<[f64; 2]> = res.sample_x.iter().zip(&res.error_y).map(|(&x, &y)| [x, y]).collect();
+                plot_ui.line(Line::new("Avvik e(x)", pts_err).color(theme.text_error).width(1.2));
+            });
+
+            if let Some(b) = updated_bounds {
+                self.poly_log_current_bounds = Some(b);
+            }
+        }
     }
 }
 
