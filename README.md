@@ -13,6 +13,8 @@ Systemet består av to integrerte moduler:
 > **Arkitektur & Systemdiagrammer:** Komplett teknisk arkitektur med interaktive Mermaid-diagrammer (systemarkitektur, GPU compute pipeline, sekvensdiagram, domenemodell og GUI-tilstandsmaskin) finnes nå direkte integrert i [Seksjon 3: Teknisk Arkitektur & Systemdiagrammer](#3-teknisk-arkitektur--systemdiagrammer).
 
 ## Bilder
+<img width="959" height="599" alt="image" src="https://github.com/user-attachments/assets/ed0701e3-d8ac-4a6e-8e12-467fe0078da9" />
+
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/3289f6bc-9ec9-4198-903a-42bf3a16ce95" />
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/4e421bf6-72fa-4062-a6b0-f94f246ae033" />
 <img width="957" height="543" alt="image" src="https://github.com/user-attachments/assets/a20422e5-c69c-4c40-91bf-ea9a60b06f9b" />
