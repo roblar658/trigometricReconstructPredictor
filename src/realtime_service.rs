@@ -50,7 +50,8 @@ impl Default for RealtimeModelStatus {
 pub struct OnlineTrigFitter {
     pub max_k: usize,
     pub dim: usize,
-    pub gram: Vec<f64>, // Flatt 2D array: dim x dim
+    pub gram: Vec<f64>, // Flatt 2D array: dim x dim (brukes for max_k <= 128)
+    pub diag: Vec<f64>, // Dimensjon: dim (alltid allokert for skalering opp til 8000)
     pub rhs_b: Vec<f64>, // Dimensjon: dim
     pub count: usize,
     pub sum_y: f64,
@@ -65,12 +66,18 @@ pub struct OnlineTrigFitter {
 
 impl OnlineTrigFitter {
     pub fn new(max_k: usize) -> Self {
-        let max_k = max_k.clamp(4, 128);
+        let max_k = max_k.clamp(4, 8000);
         let dim = 2 * max_k;
+        let gram = if max_k <= 128 {
+            vec![0.0; dim * dim]
+        } else {
+            Vec::new() // Skånsom minnebruk for k opp til 8000 (ikke 2 GB!)
+        };
         Self {
             max_k,
             dim,
-            gram: vec![0.0; dim * dim],
+            gram,
+            diag: vec![0.0; dim],
             rhs_b: vec![0.0; dim],
             count: 0,
             sum_y: 0.0,
@@ -86,7 +93,10 @@ impl OnlineTrigFitter {
 
     /// Nullstiller alle akkumulatorer
     pub fn reset(&mut self) {
-        self.gram.fill(0.0);
+        if !self.gram.is_empty() {
+            self.gram.fill(0.0);
+        }
+        self.diag.fill(0.0);
         self.rhs_b.fill(0.0);
         self.count = 0;
         self.sum_y = 0.0;
@@ -119,24 +129,40 @@ impl OnlineTrigFitter {
         self.recent_points.push_back((x, y));
 
         let dim = self.dim;
-        let mut phi = vec![0.0f64; dim];
-        for k in 1..=self.max_k {
-            let angle = (k as f64) * x;
-            phi[2 * k - 2] = angle.sin();
-            phi[2 * k - 1] = angle.cos();
-        }
+        if !self.gram.is_empty() {
+            let mut phi = vec![0.0f64; dim];
+            for k in 1..=self.max_k {
+                let angle = (k as f64) * x;
+                phi[2 * k - 2] = angle.sin();
+                phi[2 * k - 1] = angle.cos();
+            }
 
-        // Oppdater b og Gram-matrise G
-        for i in 0..dim {
-            let pi = phi[i];
-            self.rhs_b[i] += y * pi;
-            let offset_i = i * dim;
-            for j in i..dim {
-                let val = pi * phi[j];
-                self.gram[offset_i + j] += val;
-                if i != j {
-                    self.gram[j * dim + i] += val;
+            // Oppdater b og Gram-matrise G
+            for i in 0..dim {
+                let pi = phi[i];
+                self.rhs_b[i] += y * pi;
+                self.diag[i] += pi * pi;
+                let offset_i = i * dim;
+                for j in i..dim {
+                    let val = pi * phi[j];
+                    self.gram[offset_i + j] += val;
+                    if i != j {
+                        self.gram[j * dim + i] += val;
+                    }
                 }
+            }
+        } else {
+            // Skalerbar O(k) oppdatering for stor k (inntil 8000)
+            for k in 1..=self.max_k {
+                let angle = (k as f64) * x;
+                let s = angle.sin();
+                let c = angle.cos();
+                let idx_s = 2 * k - 2;
+                let idx_c = 2 * k - 1;
+                self.rhs_b[idx_s] += y * s;
+                self.rhs_b[idx_c] += y * c;
+                self.diag[idx_s] += s * s;
+                self.diag[idx_c] += c * c;
             }
         }
 
@@ -163,11 +189,21 @@ impl OnlineTrigFitter {
 
         let dim = self.dim;
         let mut scores = Vec::with_capacity(dim);
-        for i in 0..dim {
-            let diag = self.gram[i * dim + i];
-            if diag > 1e-9 {
-                let p = (self.rhs_b[i] * self.rhs_b[i]) / diag;
-                scores.push((p, i));
+        if !self.gram.is_empty() {
+            for i in 0..dim {
+                let diag = self.gram[i * dim + i];
+                if diag > 1e-9 {
+                    let p = (self.rhs_b[i] * self.rhs_b[i]) / diag;
+                    scores.push((p, i));
+                }
+            }
+        } else {
+            for i in 0..dim {
+                let diag = self.diag[i];
+                if diag > 1e-9 {
+                    let p = (self.rhs_b[i] * self.rhs_b[i]) / diag;
+                    scores.push((p, i));
+                }
             }
         }
 
@@ -187,7 +223,44 @@ impl OnlineTrigFitter {
             };
         }
 
-        let idx: Vec<usize> = scores.iter().take(active_count).map(|s| s.1).collect();
+        // Beregn vindulengde T fra recent_points for Rayleigh-kriterium (NMS / frekvensseparasjon)
+        let rayleigh = if self.max_k > 128 && self.recent_points.len() >= 2 {
+            let min_x = self.recent_points.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+            let max_x = self.recent_points.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max);
+            let span = max_x - min_x;
+            if span > 1e-5 {
+                ((2.0 * std::f64::consts::PI / span).ceil() as usize).clamp(1, 200)
+            } else {
+                1
+            }
+        } else {
+            1
+        };
+
+        let mut idx: Vec<usize> = Vec::with_capacity(active_count);
+        for &(_p, cand_idx) in &scores {
+            let cand_k = (cand_idx / 2) + 1;
+            let cand_is_cos = cand_idx % 2 == 1;
+            let mut collides = false;
+            for &s_idx in &idx {
+                let sk = (s_idx / 2) + 1;
+                let s_is_cos = s_idx % 2 == 1;
+                if sk == cand_k && s_is_cos == cand_is_cos {
+                    collides = true;
+                    break;
+                }
+                if sk != cand_k && (sk as isize - cand_k as isize).abs() < rayleigh as isize {
+                    collides = true;
+                    break;
+                }
+            }
+            if !collides {
+                idx.push(cand_idx);
+                if idx.len() >= active_count {
+                    break;
+                }
+            }
+        }
         let m = idx.len();
 
         // Bygg delsystem A * c = rhs
@@ -197,11 +270,47 @@ impl OnlineTrigFitter {
         for r in 0..m {
             let ir = idx[r];
             rhs[r] = self.rhs_b[ir];
-            for c in 0..m {
-                let ic = idx[c];
-                a_mat[r][c] = self.gram[ir * dim + ic];
+            if !self.gram.is_empty() {
+                for c in 0..m {
+                    let ic = idx[c];
+                    a_mat[r][c] = self.gram[ir * dim + ic];
+                }
             }
-            // Tikhonov regularisering for numerisk stabilitet ved få punkter (f.eks. N=1, 2)
+        }
+
+        if self.gram.is_empty() {
+            // For stor k (inntil 8000): Beregn delsystemets Gram-matrise on-demand fra nylige punkter
+            let pts_count = self.recent_points.len();
+            if pts_count > 0 {
+                let scale = (self.count as f64) / (pts_count as f64);
+                let mut phi_active = vec![0.0f64; m];
+                for &(px, _) in self.recent_points.iter() {
+                    for (sub_i, &term_idx) in idx.iter().enumerate() {
+                        let k = ((term_idx / 2) + 1) as f64;
+                        let angle = k * px;
+                        phi_active[sub_i] = if term_idx % 2 == 0 { angle.sin() } else { angle.cos() };
+                    }
+                    for r in 0..m {
+                        let pr = phi_active[r];
+                        for c in r..m {
+                            let v = pr * phi_active[c];
+                            a_mat[r][c] += v;
+                        }
+                    }
+                }
+                for r in 0..m {
+                    for c in r..m {
+                        a_mat[r][c] *= scale;
+                        if r != c {
+                            a_mat[c][r] = a_mat[r][c];
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tikhonov regularisering for numerisk stabilitet ved faa punkter
+        for r in 0..m {
             a_mat[r][r] += 1e-6;
         }
 
@@ -1198,5 +1307,28 @@ mod tests {
 
         controller.stop();
     }
-}
+#[test]
+    fn test_online_trig_fitter_k8000() {
+        // Test med k helt opp til 8000 (hoyfrekvent sanntidsstrom)
+        let mut fitter = OnlineTrigFitter::new(8000);
+        assert_eq!(fitter.max_k, 8000);
+        assert_eq!(fitter.dim, 16000);
+        assert!(fitter.gram.is_empty(), "For k > 128 skal ikke 2 GB Gram-matrise allokeres");
+        assert_eq!(fitter.diag.len(), 16000);
+        assert_eq!(fitter.rhs_b.len(), 16000);
 
+        // Generer punkter fra et signal med hoyfrekvente ledd: sin(1500x) og cos(4500x)
+        // Nyquist-kriteriet for k=8000 krever sampling med dt < pi / 8000 ~= 0.000392.
+        for i in 0..200 {
+            let x = (i as f64) * 0.0002;
+            let y = 3.0 * (1500.0 * x).sin() + 2.0 * (4500.0 * x).cos();
+            fitter.add_point(x, y);
+        }
+
+        let res = fitter.solve_model(4);
+        assert_eq!(res.count, 200);
+        assert!(res.formula.contains("1500"), "Mangler sin(1500x): {}", res.formula);
+        assert!(res.formula.contains("4500"), "Mangler cos(4500x): {}", res.formula);
+        assert!(res.r_squared > 0.98, "R^2 var {:.4}", res.r_squared);
+    }
+}

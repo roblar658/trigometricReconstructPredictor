@@ -1812,10 +1812,11 @@ impl ExtremaApp {
 
                     ui.label(RichText::new("Maks k:").color(theme.text_secondary).size(12.0));
                     let k_resp = ui.add(
-                        egui::Slider::new(&mut self.service_max_k, 4..=128)
+                        egui::Slider::new(&mut self.service_max_k, 4..=8000)
+                            .logarithmic(true)
                             .text(""),
                     )
-                    .on_hover_text("Maksimal Fourier-frekvens i online Gram-matrisen");
+                    .on_hover_text("Maksimal Fourier-frekvens i online modellen (støtter inntil 8000)");
                     if k_resp.changed() {
                         self.service_controller.reinit_fitter(self.service_max_k);
                     }
