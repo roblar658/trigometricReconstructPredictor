@@ -819,45 +819,37 @@ fn run_interactive_client(host: String, port: u16) {
             println!("Tilkobling avsluttet.");
             break;
         } else if cmd == "1" {
-            let x = sim_x;
-            let y = x.sin() + 0.5 * (2.0 * x).cos();
-            sim_x += 0.1;
+            let (x, y) = realtime_service::generate_random_test_point(&mut sim_x, false);
             let line = format!("{:.3}, {:.3}\n", x, y);
             let _ = stream.write_all(line.as_bytes());
             let _ = stream.flush();
             let mut reply = String::new();
             let _ = reader.read_line(&mut reply);
-            println!("< Sendte ({:.3}, {:.3}) -> {}", x, y, reply.trim());
+            println!("< Sendte tilfeldig punkt ({:.3}, {:.3}) -> {}", x, y, reply.trim());
         } else if cmd == "2" {
             for _ in 0..2 {
-                let x = sim_x;
-                let y = x.sin() + 0.5 * (2.0 * x).cos();
-                sim_x += 0.1;
+                let (x, y) = realtime_service::generate_random_test_point(&mut sim_x, false);
                 let line = format!("{:.3}, {:.3}\n", x, y);
                 let _ = stream.write_all(line.as_bytes());
                 let _ = stream.flush();
                 let mut reply = String::new();
                 let _ = reader.read_line(&mut reply);
-                println!("< Punkt ({:.3}, {:.3}) -> {}", x, y, reply.trim());
+                println!("< Tilfeldig punkt ({:.3}, {:.3}) -> {}", x, y, reply.trim());
             }
         } else if cmd == "3" {
             for _ in 0..3 {
-                let x = sim_x;
-                let y = x.sin() + 0.5 * (2.0 * x).cos();
-                sim_x += 0.1;
+                let (x, y) = realtime_service::generate_random_test_point(&mut sim_x, false);
                 let line = format!("{:.3}, {:.3}\n", x, y);
                 let _ = stream.write_all(line.as_bytes());
                 let _ = stream.flush();
                 let mut reply = String::new();
                 let _ = reader.read_line(&mut reply);
-                println!("< Punkt ({:.3}, {:.3}) -> {}", x, y, reply.trim());
+                println!("< Tilfeldig punkt ({:.3}, {:.3}) -> {}", x, y, reply.trim());
             }
         } else if cmd.eq_ignore_ascii_case("batch") || cmd == "b" {
             let mut batch_msg = String::from("BATCH\n");
             for _ in 0..10 {
-                let x = sim_x;
-                let y = x.sin() + 0.5 * (2.0 * x).cos();
-                sim_x += 0.1;
+                let (x, y) = realtime_service::generate_random_test_point(&mut sim_x, false);
                 batch_msg.push_str(&format!("{:.3}, {:.3}\n", x, y));
             }
             batch_msg.push_str("ENDBATCH\n");

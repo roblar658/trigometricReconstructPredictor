@@ -138,6 +138,8 @@ pub struct ExtremaApp {
     pub service_test_x: f64,
     pub service_test_y: f64,
     pub service_test_step: f64,
+    pub service_random_test_values: bool,
+    pub service_random_uniform: bool,
     pub service_status_msg: Option<String>,
     pub service_error_msg: Option<String>,
 }
@@ -220,6 +222,8 @@ impl Default for ExtremaApp {
             service_test_x: 0.0,
             service_test_y: 0.0,
             service_test_step: 0.1,
+            service_random_test_values: true,
+            service_random_uniform: false,
             service_status_msg: None,
             service_error_msg: None,
         };
@@ -1993,14 +1997,23 @@ impl ExtremaApp {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("🧪 Test sensorverdier:").strong().color(theme.text_accent).size(12.5));
 
+                    ui.checkbox(&mut self.service_random_test_values, RichText::new("🎲 Random").strong().color(theme.text_accent).size(12.0))
+                        .on_hover_text("Genererer tilfeldige sensorverdier (random x, y) ved trykk på test-knapper");
+
                     if ui
                         .button(RichText::new("➕ Send 1 verdi").strong().color(theme.text_primary).size(12.0))
-                        .on_hover_text("Sender 1 nytt sensorpunkt inn i online Gram-matrisen")
+                        .on_hover_text("Sender 1 tilfeldig sensorpunkt inn i online Gram-matrisen")
                         .clicked()
                     {
-                        let x = self.service_test_x;
-                        let y = x.sin() + 0.5 * (2.0 * x).cos();
-                        self.service_test_x += self.service_test_step;
+                        let (x, y) = if self.service_random_test_values {
+                            crate::realtime_service::generate_random_test_point(&mut self.service_test_x, self.service_random_uniform)
+                        } else {
+                            let x = self.service_test_x;
+                            let y = x.sin() + 0.5 * (2.0 * x).cos();
+                            self.service_test_x += self.service_test_step;
+                            (x, y)
+                        };
+                        self.service_test_y = y;
                         let st = self.service_controller.push_point(x, y);
                         self.service_status_msg = Some(format!(
                             "Mottok 1 verdi: ({:.2}, {:.2}). Nå N={}, f(x)={}",
@@ -2010,14 +2023,20 @@ impl ExtremaApp {
 
                     if ui
                         .button(RichText::new("➕ Send 2 verdier").strong().color(theme.text_primary).size(12.0))
-                        .on_hover_text("Sender 2 påfølgende sensorpunkter")
+                        .on_hover_text("Sender 2 tilfeldige sensorpunkter")
                         .clicked()
                     {
                         let mut pts = Vec::with_capacity(2);
                         for _ in 0..2 {
-                            let x = self.service_test_x;
-                            let y = x.sin() + 0.5 * (2.0 * x).cos();
-                            self.service_test_x += self.service_test_step;
+                            let (x, y) = if self.service_random_test_values {
+                                crate::realtime_service::generate_random_test_point(&mut self.service_test_x, self.service_random_uniform)
+                            } else {
+                                let x = self.service_test_x;
+                                let y = x.sin() + 0.5 * (2.0 * x).cos();
+                                self.service_test_x += self.service_test_step;
+                                (x, y)
+                            };
+                            self.service_test_y = y;
                             pts.push((x, y));
                         }
                         let st = self.service_controller.push_batch(&pts);
@@ -2029,14 +2048,20 @@ impl ExtremaApp {
 
                     if ui
                         .button(RichText::new("➕ Send 3 verdier").strong().color(theme.text_primary).size(12.0))
-                        .on_hover_text("Sender 3 påfølgende sensorpunkter")
+                        .on_hover_text("Sender 3 tilfeldige sensorpunkter")
                         .clicked()
                     {
                         let mut pts = Vec::with_capacity(3);
                         for _ in 0..3 {
-                            let x = self.service_test_x;
-                            let y = x.sin() + 0.5 * (2.0 * x).cos();
-                            self.service_test_x += self.service_test_step;
+                            let (x, y) = if self.service_random_test_values {
+                                crate::realtime_service::generate_random_test_point(&mut self.service_test_x, self.service_random_uniform)
+                            } else {
+                                let x = self.service_test_x;
+                                let y = x.sin() + 0.5 * (2.0 * x).cos();
+                                self.service_test_x += self.service_test_step;
+                                (x, y)
+                            };
+                            self.service_test_y = y;
                             pts.push((x, y));
                         }
                         let st = self.service_controller.push_batch(&pts);
@@ -2048,14 +2073,20 @@ impl ExtremaApp {
 
                     if ui
                         .button(RichText::new("📦 Send Batch (10 verdier)").color(theme.text_primary).size(12.0))
-                        .on_hover_text("Sender en batch på 10 punkter på en gang")
+                        .on_hover_text("Sender en batch på 10 tilfeldige punkter på en gang")
                         .clicked()
                     {
                         let mut pts = Vec::with_capacity(10);
                         for _ in 0..10 {
-                            let x = self.service_test_x;
-                            let y = x.sin() + 0.5 * (2.0 * x).cos();
-                            self.service_test_x += self.service_test_step;
+                            let (x, y) = if self.service_random_test_values {
+                                crate::realtime_service::generate_random_test_point(&mut self.service_test_x, self.service_random_uniform)
+                            } else {
+                                let x = self.service_test_x;
+                                let y = x.sin() + 0.5 * (2.0 * x).cos();
+                                self.service_test_x += self.service_test_step;
+                                (x, y)
+                            };
+                            self.service_test_y = y;
                             pts.push((x, y));
                         }
                         let st = self.service_controller.push_batch(&pts);
@@ -2066,6 +2097,12 @@ impl ExtremaApp {
                     }
 
                     ui.separator();
+
+                    if ui.button(RichText::new("🎲 Nytt (x,y)").size(11.0)).on_hover_text("Generer et nytt tilfeldig punkt").clicked() {
+                        let (x, y) = crate::realtime_service::generate_random_test_point(&mut self.service_test_x, self.service_random_uniform);
+                        self.service_test_x = x;
+                        self.service_test_y = y;
+                    }
 
                     ui.label(RichText::new("x:").size(11.5).color(theme.text_secondary));
                     ui.add(egui::DragValue::new(&mut self.service_test_x).speed(0.05));
@@ -2210,17 +2247,15 @@ impl ExtremaApp {
                     });
 
                     ui.separator();
-                    ui.label(RichText::new(format!("• TCP-port: {} (Ren sokkel, ingen HTTP)", self.service_port)).color(theme.text_success).monospace().size(11.5));
+                    ui.label(RichText::new(format!("• HTTP GET API (port {}): Returnerer ren JSON", self.service_port)).color(theme.text_success).monospace().size(11.5));
                     ui.add_space(2.0);
-                    ui.label(RichText::new("• Terminal-kommando (kjør i PowerShell / CMD):").color(theme.text_secondary).size(11.0));
-                    ui.label(RichText::new(format!("  .\\gpu_extrema_classifier.exe client --port {}", self.service_port)).color(theme.text_primary).monospace().size(11.0));
-                    ui.label(RichText::new(format!("  .\\client.ps1 -Port {}", self.service_port)).color(theme.text_primary).monospace().size(11.0));
+                    ui.label(RichText::new("• Eksempler på HTTP GET kommandoer (i nettleser, curl eller script):").color(theme.text_secondary).size(11.0));
+                    ui.label(RichText::new(format!("  curl http://localhost:{}/status", self.service_port)).color(theme.text_primary).monospace().size(10.5));
+                    ui.label(RichText::new(format!(r#"  curl "http://localhost:{}/add?x=0.5&y=1.2""#, self.service_port)).color(theme.text_primary).monospace().size(10.5));
+                    ui.label(RichText::new(format!("  curl http://localhost:{}/1   (eller /2, /3, /batch)", self.service_port)).color(theme.text_primary).monospace().size(10.5));
+                    ui.label(RichText::new(format!("  curl http://localhost:{}/quit", self.service_port)).color(theme.text_primary).monospace().size(10.5));
                     ui.add_space(2.0);
-                    ui.label(RichText::new("• Hurtigkommandoer i terminal-klienten:").color(theme.text_secondary).size(11.0));
-                    ui.label(RichText::new("  1, 2, 3       : Sender 1, 2 eller 3 sensorverdier").color(theme.text_primary).monospace().size(10.5));
-                    ui.label(RichText::new("  0.5, 1.2      : Sender egendefinert målepunkt (x, y)").color(theme.text_primary).monospace().size(10.5));
-                    ui.label(RichText::new("  batch         : Sender test-batch med 10 målinger").color(theme.text_primary).monospace().size(10.5));
-                    ui.label(RichText::new("  status / quit : Viser modell-status eller avslutter").color(theme.text_primary).monospace().size(10.5));
+                    ui.label(RichText::new("• Støtter også ren TCP: Send 'x,y\n', '1', '2', '3', 'batch' eller 'quit'").color(theme.text_secondary).monospace().size(10.5));
                     ui.add_space(2.0);
                     ui.label(RichText::new("• Sikkerhet & Ytelse:").color(theme.text_secondary).size(11.0));
                     ui.label(RichText::new("  0 Injection: Streng IEEE 754 flyttall-validering").color(theme.text_secondary).size(10.5));

@@ -448,6 +448,207 @@ impl Drop for RealtimeServiceController {
     }
 }
 
+/// Håndterer HTTP GET-forespørsler og returnerer (JSON-streng, should_close_connection)
+/// Trådsikker pseudo-tilfeldig tallgenerator (XorShift64)
+pub fn next_random_f64() -> f64 {
+    use std::cell::Cell;
+    use std::time::SystemTime;
+
+    thread_local! {
+        static RNG: Cell<u64> = Cell::new({
+            let nanos = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0x853c49e6748fea9b);
+            if nanos == 0 { 0x853c49e6748fea9b } else { nanos }
+        });
+    }
+
+    RNG.with(|r| {
+        let mut x = r.get();
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        if x == 0 {
+            x = 0x853c49e6748fea9b;
+        }
+        r.set(x);
+        (x as f64) / (u64::MAX as f64)
+    })
+}
+
+/// Genererer et tilfeldig testpunkt (x, y) for sanntidssimulering
+pub fn generate_random_test_point(sim_x: &mut f64, uniform: bool) -> (f64, f64) {
+    if uniform {
+        let x = ((next_random_f64() * std::f64::consts::TAU) * 1000.0).round() / 1000.0;
+        let y = (((next_random_f64() * 5.0) - 2.5) * 1000.0).round() / 1000.0;
+        *sim_x = x;
+        (x, y)
+    } else {
+        // Skritt fremover med tilfeldig tidssteg (0.05 til 0.30)
+        let dx = 0.05 + 0.25 * next_random_f64();
+        *sim_x += dx;
+        let x = (*sim_x * 1000.0).round() / 1000.0;
+        // Dynamiske tilfeldige amplituder og støy
+        let amp1 = 0.7 + 1.5 * next_random_f64();
+        let amp2 = 0.3 + 1.0 * next_random_f64();
+        let noise = (next_random_f64() - 0.5) * 0.25;
+        let y = ((amp1 * x.sin() + amp2 * (2.0 * x).cos() + noise) * 1000.0).round() / 1000.0;
+        (x, y)
+    }
+}
+
+pub fn handle_http_get(
+    raw_path_and_query: &str,
+    state: &Arc<RwLock<RealtimeServiceState>>,
+) -> (String, bool) {
+    let clean = raw_path_and_query.trim();
+    let (path, query) = match clean.split_once('?') {
+        Some((p, q)) => (p, q),
+        None => (clean, ""),
+    };
+
+    let p = path.trim_matches('/');
+
+    if p.is_empty() || p.eq_ignore_ascii_case("status") || p.eq_ignore_ascii_case("api/status") {
+        let status = if let Ok(st) = state.read() {
+            st.latest_status.clone()
+        } else {
+            RealtimeModelStatus::default()
+        };
+        let json = format!(
+            "{{\"status\":\"ok\",\"count\":{},\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+            status.count, status.formula, status.terms_count, status.r_squared, status.rmse
+        );
+        (json, true)
+    } else if p == "1" || p.eq_ignore_ascii_case("send1") {
+        let mut st = state.write().unwrap();
+        let mut sim_x = (st.fitter.count as f64) * 0.2;
+        let (x, y) = generate_random_test_point(&mut sim_x, false);
+        st.fitter.add_point(x, y);
+        let max_terms = st.max_terms;
+        let s = st.fitter.solve_model(max_terms);
+        st.latest_status = s.clone();
+        st.log(format!("HTTP GET /1 -> Tilfeldig punkt ({:.3}, {:.3}), N={}", x, y, s.count));
+        let json = format!(
+            "{{\"status\":\"ok\",\"count\":{},\"added\":1,\"point\":[{:.4},{:.4}],\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+            s.count, x, y, s.formula, s.terms_count, s.r_squared, s.rmse
+        );
+        (json, true)
+    } else if p == "2" || p.eq_ignore_ascii_case("send2") {
+        let mut st = state.write().unwrap();
+        let mut sim_x = (st.fitter.count as f64) * 0.2;
+        for _ in 0..2 {
+            let (x, y) = generate_random_test_point(&mut sim_x, false);
+            st.fitter.add_point(x, y);
+        }
+        let max_terms = st.max_terms;
+        let s = st.fitter.solve_model(max_terms);
+        st.latest_status = s.clone();
+        st.log(format!("HTTP GET /2 -> 2 tilfeldige punkter lagt til, N={}", s.count));
+        let json = format!(
+            "{{\"status\":\"ok\",\"count\":{},\"added\":2,\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+            s.count, s.formula, s.terms_count, s.r_squared, s.rmse
+        );
+        (json, true)
+    } else if p == "3" || p.eq_ignore_ascii_case("send3") {
+        let mut st = state.write().unwrap();
+        let mut sim_x = (st.fitter.count as f64) * 0.2;
+        for _ in 0..3 {
+            let (x, y) = generate_random_test_point(&mut sim_x, false);
+            st.fitter.add_point(x, y);
+        }
+        let max_terms = st.max_terms;
+        let s = st.fitter.solve_model(max_terms);
+        st.latest_status = s.clone();
+        st.log(format!("HTTP GET /3 -> 3 tilfeldige punkter lagt til, N={}", s.count));
+        let json = format!(
+            "{{\"status\":\"ok\",\"count\":{},\"added\":3,\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+            s.count, s.formula, s.terms_count, s.r_squared, s.rmse
+        );
+        (json, true)
+    } else if p.eq_ignore_ascii_case("add") || p.eq_ignore_ascii_case("point") {
+        let mut opt_x = None;
+        let mut opt_y = None;
+        for param in query.split('&') {
+            if let Some((k, v)) = param.split_once('=') {
+                if k.eq_ignore_ascii_case("x") {
+                    opt_x = v.parse::<f64>().ok();
+                } else if k.eq_ignore_ascii_case("y") {
+                    opt_y = v.parse::<f64>().ok();
+                }
+            }
+        }
+
+        if let (Some(x), Some(y)) = (opt_x, opt_y) {
+            if x.is_finite() && y.is_finite() {
+                let mut st = state.write().unwrap();
+                st.fitter.add_point(x, y);
+                let max_terms = st.max_terms;
+                let s = st.fitter.solve_model(max_terms);
+                st.latest_status = s.clone();
+                st.log(format!("HTTP GET /add ({:.3}, {:.3}) -> N={}", x, y, s.count));
+                let json = format!(
+                    "{{\"status\":\"ok\",\"count\":{},\"point\":[{:.4},{:.4}],\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+                    s.count, x, y, s.formula, s.terms_count, s.r_squared, s.rmse
+                );
+                (json, true)
+            } else {
+                ("{\"status\":\"error\",\"message\":\"x og y må være gyldige endelige tall (ikke NaN/Inf)\"}".to_string(), true)
+            }
+        } else {
+            ("{\"status\":\"error\",\"message\":\"Mangler x og/eller y i spørrestrengen (f.eks. /add?x=0.5&y=1.2)\"}".to_string(), true)
+        }
+    } else if p.eq_ignore_ascii_case("batch") {
+        let mut st = state.write().unwrap();
+        let mut sim_x = (st.fitter.count as f64) * 0.2;
+        for _ in 0..10 {
+            let (x, y) = generate_random_test_point(&mut sim_x, false);
+            st.fitter.add_point(x, y);
+        }
+        let max_terms = st.max_terms;
+        let s = st.fitter.solve_model(max_terms);
+        st.latest_status = s.clone();
+        st.log(format!("HTTP GET /batch -> 10 punkter lagt til, N={}", s.count));
+        let json = format!(
+            "{{\"status\":\"ok\",\"count\":{},\"added\":10,\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+            s.count, s.formula, s.terms_count, s.r_squared, s.rmse
+        );
+        (json, true)
+    } else if p.eq_ignore_ascii_case("reset") {
+        let mut st = state.write().unwrap();
+        st.fitter.reset();
+        st.latest_status = RealtimeModelStatus::default();
+        st.log("HTTP GET /reset -> Modell nullstilt".to_string());
+        ("{\"status\":\"ok\",\"count\":0,\"message\":\"Modell nullstilt\"}".to_string(), true)
+    } else if p.eq_ignore_ascii_case("quit") || p.eq_ignore_ascii_case("exit") {
+        let cur_count = if let Ok(st) = state.read() { st.latest_status.count } else { 0 };
+        if let Ok(mut st) = state.write() {
+            st.log("HTTP GET /quit mottatt".to_string());
+        }
+        let json = format!(
+            "{{\"status\":\"bye\",\"count\":{},\"message\":\"Sesjon avsluttet\"}}",
+            cur_count
+        );
+        (json, true)
+    } else if let Some((x, y)) = parse_point(p) {
+        let mut st = state.write().unwrap();
+        st.fitter.add_point(x, y);
+        let max_terms = st.max_terms;
+        let s = st.fitter.solve_model(max_terms);
+        st.latest_status = s.clone();
+        st.log(format!("HTTP GET /{} -> N={}", p, s.count));
+        let json = format!(
+            "{{\"status\":\"ok\",\"count\":{},\"point\":[{:.4},{:.4}],\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+            s.count, x, y, s.formula, s.terms_count, s.r_squared, s.rmse
+        );
+        (json, true)
+    } else {
+        let json = "{\"status\":\"error\",\"message\":\"Ukjent HTTP GET endepunkt\",\"valid_endpoints\":[\"/status\",\"/1\",\"/2\",\"/3\",\"/add?x=0.5&y=1.2\",\"/batch\",\"/reset\",\"/quit\"]}".to_string();
+        (json, true)
+    }
+}
+
 /// Sikker og lynrask klienthåndterer for innkommende sensordata
 fn handle_client(
     mut stream: TcpStream,
@@ -493,6 +694,35 @@ fn handle_client(
                     continue;
                 }
 
+                // 0. HTTP GET-forespørsler (f.eks. fra curl, nettleser eller sensor) -> returnerer JSON
+                if trimmed.starts_with("GET ") {
+                    // Les eventuelle gjenværende HTTP request-headers frem til tom linje
+                    let mut header_buf = String::new();
+                    while let Ok(n) = reader.read_line(&mut header_buf) {
+                        if n == 0 || header_buf.trim().is_empty() {
+                            break;
+                        }
+                        header_buf.clear();
+                    }
+
+                    let after_get = trimmed[4..].trim_start();
+                    let path_and_query = match after_get.find(' ') {
+                        Some(idx) => &after_get[..idx],
+                        None => after_get,
+                    };
+
+                    let (json_resp, _should_close) = handle_http_get(path_and_query, &state);
+                    let body = format!("{}\n", json_resp);
+                    let http_resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = stream.write_all(http_resp.as_bytes());
+                    let _ = stream.flush();
+                    break;
+                }
+
                 // 1. Støtte for QUIT og EXIT
                 if trimmed.eq_ignore_ascii_case("QUIT") || trimmed.eq_ignore_ascii_case("EXIT") {
                     let cur_count = if let Ok(st) = state.read() { st.latest_status.count } else { 0 };
@@ -521,6 +751,74 @@ fn handle_client(
                         status.count, status.formula, status.terms_count, status.r_squared, status.rmse
                     );
                     let _ = stream.write_all(resp.as_bytes());
+                    continue;
+                }
+
+                // Støtte for hurtigsending av 1, 2 eller 3 tilfeldige verdier over ren TCP
+                if trimmed == "1" || trimmed.eq_ignore_ascii_case("SEND1") {
+                    let (s, x, y) = {
+                        let mut st = state.write().unwrap();
+                        let mut sim_x = (st.fitter.count as f64) * 0.2;
+                        let (x, y) = generate_random_test_point(&mut sim_x, false);
+                        st.fitter.add_point(x, y);
+                        let max_terms = st.max_terms;
+                        let s = st.fitter.solve_model(max_terms);
+                        st.latest_status = s.clone();
+                        st.log(format!("Mottok 1 tilfeldig verdi ({:.3}, {:.3}) -> N={}", x, y, s.count));
+                        (s, x, y)
+                    };
+                    let resp = format!(
+                        "{{\"status\":\"ok\",\"count\":{},\"point\":[{:.4},{:.4}],\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                        s.count, x, y, s.formula, s.terms_count, s.r_squared, s.rmse
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                    continue;
+                }
+
+                if trimmed == "2" || trimmed.eq_ignore_ascii_case("SEND2") {
+                    let s = {
+                        let mut st = state.write().unwrap();
+                        let mut sim_x = (st.fitter.count as f64) * 0.2;
+                        for _ in 0..2 {
+                            let (x, y) = generate_random_test_point(&mut sim_x, false);
+                            st.fitter.add_point(x, y);
+                        }
+                        let max_terms = st.max_terms;
+                        let s = st.fitter.solve_model(max_terms);
+                        st.latest_status = s.clone();
+                        st.log(format!("Mottok 2 tilfeldige verdier -> N={}", s.count));
+                        s
+                    };
+                    let resp = format!(
+                        "{{\"status\":\"ok\",\"count\":{},\"added\":2,\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                        s.count, s.formula, s.terms_count, s.r_squared, s.rmse
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                    continue;
+                }
+
+                if trimmed == "3" || trimmed.eq_ignore_ascii_case("SEND3") {
+                    let s = {
+                        let mut st = state.write().unwrap();
+                        let mut sim_x = (st.fitter.count as f64) * 0.2;
+                        for _ in 0..3 {
+                            let (x, y) = generate_random_test_point(&mut sim_x, false);
+                            st.fitter.add_point(x, y);
+                        }
+                        let max_terms = st.max_terms;
+                        let s = st.fitter.solve_model(max_terms);
+                        st.latest_status = s.clone();
+                        st.log(format!("Mottok 3 tilfeldige verdier -> N={}", s.count));
+                        s
+                    };
+                    let resp = format!(
+                        "{{\"status\":\"ok\",\"count\":{},\"added\":3,\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                        s.count, s.formula, s.terms_count, s.r_squared, s.rmse
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
                     continue;
                 }
 
@@ -838,6 +1136,65 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         assert!(line.contains("\"status\":\"bye\""));
         assert!(line.contains("\"count\":3"));
+
+        controller.stop();
+    }
+
+    #[test]
+    fn test_http_get_json_endpoints() {
+        use std::io::Read;
+        let port = 8798;
+        let mut controller = RealtimeServiceController::new(port, 16);
+        controller.start().expect("Kunne ikke starte test-tjeneste");
+
+        // 1. Test GET /status
+        {
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            stream.write_all(b"GET /status HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+            let mut reply = String::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_to_string(&mut reply).unwrap();
+            assert!(reply.starts_with("HTTP/1.1 200 OK"));
+            assert!(reply.contains("application/json"));
+            assert!(reply.contains("\"status\":\"ok\""));
+        }
+
+        // 2. Test GET /add?x=0.5&y=1.2
+        {
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            stream.write_all(b"GET /add?x=0.5&y=1.2 HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+            let mut reply = String::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_to_string(&mut reply).unwrap();
+            assert!(reply.contains("\"count\":1"));
+            assert!(reply.contains("0.5"));
+            assert!(reply.contains("1.2"));
+        }
+
+        // 3. Test GET /3
+        {
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            stream.write_all(b"GET /3 HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+            let mut reply = String::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_to_string(&mut reply).unwrap();
+            assert!(reply.contains("\"added\":3"));
+            assert!(reply.contains("\"count\":4"));
+        }
+
+        // 4. Test GET /quit
+        {
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            stream.write_all(b"GET /quit HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+            let mut reply = String::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_to_string(&mut reply).unwrap();
+            assert!(reply.contains("\"status\":\"bye\""));
+        }
 
         controller.stop();
     }
