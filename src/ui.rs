@@ -152,6 +152,7 @@ pub struct ExtremaApp {
     pub poly_log_a: f64,
     pub poly_log_b: f64,
     pub poly_log_degree: usize,
+    pub poly_log_auto_terms: bool,
     pub poly_log_include_ln: bool,
     pub poly_log_include_x_ln: bool,
     pub poly_log_include_inv_x: bool,
@@ -236,7 +237,7 @@ impl Default for ExtremaApp {
             service_controller: RealtimeServiceController::new(8765, 32),
             service_port: 8765,
             service_max_k: 32,
-            service_max_terms: 4,
+            service_max_terms: 100,
             service_test_x: 0.0,
             service_test_y: 0.0,
             service_test_step: 0.1,
@@ -252,6 +253,7 @@ impl Default for ExtremaApp {
             poly_log_a: 0.5,
             poly_log_b: 6.28,
             poly_log_degree: 2,
+            poly_log_auto_terms: true,
             poly_log_include_ln: true,
             poly_log_include_x_ln: false,
             poly_log_include_inv_x: false,
@@ -2512,20 +2514,28 @@ impl ExtremaApp {
 
                     ui.separator();
 
-                    ui.label(RichText::new("Maks polynomgrad:").strong().color(theme.text_secondary).size(12.0));
-                    ui.add(egui::Slider::new(&mut self.poly_log_degree, 1..=6).text(""))
-                        .on_hover_text("Høyeste x-potens som inkluderes (f.eks. 2 gir ledd inntil x²)");
+                    ui.checkbox(&mut self.poly_log_auto_terms, RichText::new("Auto antall ledd").strong().color(theme.text_accent))
+                        .on_hover_text("Finner automatisk optimalt antall ledd og polynomgrad for best mulig nøyaktighet (R²)");
 
-                    ui.separator();
+                    if !self.poly_log_auto_terms {
+                        ui.separator();
+                        ui.label(RichText::new("Maks polynomgrad:").strong().color(theme.text_secondary).size(12.0));
+                        ui.add(egui::Slider::new(&mut self.poly_log_degree, 1..=6).text(""))
+                            .on_hover_text("Høyeste x-potens som inkluderes (f.eks. 2 gir ledd inntil x²)");
 
-                    ui.checkbox(&mut self.poly_log_include_ln, RichText::new("log(x)").strong().color(theme.text_accent))
-                        .on_hover_text("Inkluder naturlig logaritme ln(x)");
+                        ui.separator();
 
-                    ui.checkbox(&mut self.poly_log_include_x_ln, "x*log(x)")
-                        .on_hover_text("Inkluder produktledd x * ln(x)");
+                        ui.checkbox(&mut self.poly_log_include_ln, RichText::new("log(x)").strong().color(theme.text_accent))
+                            .on_hover_text("Inkluder naturlig logaritme ln(x)");
 
-                    ui.checkbox(&mut self.poly_log_include_inv_x, "1/x")
-                        .on_hover_text("Inkluder inversledd 1/x");
+                        ui.checkbox(&mut self.poly_log_include_x_ln, "x*log(x)")
+                            .on_hover_text("Inkluder produktledd x * ln(x)");
+
+                        ui.checkbox(&mut self.poly_log_include_inv_x, "1/x")
+                            .on_hover_text("Inkluder inversledd 1/x");
+                    } else {
+                        ui.label(RichText::new("(Optimal grad 1–6 og basisledd tilpasses automatisk)").italics().color(theme.text_secondary).size(11.5));
+                    }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button(RichText::new("⚡ Beregn Polynom & Log").strong().color(theme.text_success).size(12.5)).clicked() {
@@ -2537,6 +2547,7 @@ impl ExtremaApp {
                                         include_x_ln: self.poly_log_include_x_ln,
                                         include_inv_x: self.poly_log_include_inv_x,
                                         num_samples: 300,
+                                        auto_terms: self.poly_log_auto_terms,
                                     };
                                     match crate::poly_log_simplifier::simplify_trig_to_poly_log(&func, self.poly_log_a, self.poly_log_b, &config) {
                                         Ok(res) => {
@@ -2579,9 +2590,6 @@ impl ExtremaApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button(RichText::new("📋 Kopier LaTeX").size(11.0)).clicked() {
                                 ui.ctx().copy_text(res.latex_formula.clone());
-                            }
-                            if ui.button(RichText::new("🐍 Kopier Python").size(11.0)).clicked() {
-                                ui.ctx().copy_text(res.python_formula.clone());
                             }
                             if ui.button(RichText::new("📋 Kopier P(x)").size(11.0)).clicked() {
                                 ui.ctx().copy_text(res.simplified_formula.clone());

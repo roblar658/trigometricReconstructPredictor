@@ -20,6 +20,7 @@ pub struct PolyLogBasisConfig {
     pub include_x_ln: bool,        // Inkluder x * ln(x)
     pub include_inv_x: bool,       // Inkluder 1 / x
     pub num_samples: usize,        // Antall integrasjonspunkter over [a, b]
+    pub auto_terms: bool,          // Automatisk tilpasning av optimalt antall ledd og grad
 }
 
 impl Default for PolyLogBasisConfig {
@@ -30,8 +31,10 @@ impl Default for PolyLogBasisConfig {
             include_x_ln: false,
             include_inv_x: false,
             num_samples: 300,
+            auto_terms: true,
         }
     }
+
 }
 
 #[derive(Clone, Debug)]
@@ -61,35 +64,19 @@ pub struct PolyLogSimplifierResult {
     pub error_y: Vec<f64>,
 }
 
-/// Forenkler et trigonometrisk uttrykk til et polynom- og logaritme-uttrykk over [a, b]
-pub fn simplify_trig_to_poly_log(
+fn fit_single_candidate(
     func: &TrigFunction,
     a: f64,
     b: f64,
-    config: &PolyLogBasisConfig,
-) -> Result<PolyLogSimplifierResult, String> {
-    if a >= b {
-        return Err("Startpunkt 'a' må være strengt mindre enn sluttpunkt 'b'.".to_string());
-    }
-    if config.include_ln && a <= 0.0 {
-        return Err("For å inkludere log(x) må definisjonsmengden være positiv (a > 0, f.eks. a = 0.1 eller 0.5).".to_string());
-    }
+    x_vals: &[f64],
+    y_orig: &[f64],
+    degree: usize,
+    include_ln: bool,
+    include_x_ln: bool,
+    include_inv_x: bool,
+) -> PolyLogSimplifierResult {
+    let n = x_vals.len();
 
-    let n = config.num_samples.clamp(50, 2000);
-    let step = (b - a) / (n - 1) as f64;
-
-    let mut x_vals = Vec::with_capacity(n);
-    let mut y_orig = Vec::with_capacity(n);
-
-    for i in 0..n {
-        let x = a + (i as f64) * step;
-        let y = func.eval(x);
-        x_vals.push(x);
-        y_orig.push(y);
-    }
-
-    // 1. Bygg basis-funksjoner:
-    // Kolonner: x^d, ..., x^2, x^1, ln(x), x*ln(x), 1/x, 1 (konstant)
     struct BasisDef {
         name: String,
         latex: String,
@@ -101,7 +88,7 @@ pub fn simplify_trig_to_poly_log(
     let mut basis: Vec<BasisDef> = Vec::new();
 
     // Polynomledd fra høyeste til 1. grad
-    for deg in (1..=config.max_degree).rev() {
+    for deg in (1..=degree.max(1)).rev() {
         let name = if deg == 1 { "x".to_string() } else { format!("x^{}", deg) };
         let latex = if deg == 1 { "x".to_string() } else { format!("x^{{{}}}", deg) };
         let p = deg as i32;
@@ -114,8 +101,7 @@ pub fn simplify_trig_to_poly_log(
         });
     }
 
-    // Logaritmeledd: ln(x)
-    if config.include_ln {
+    if include_ln {
         basis.push(BasisDef {
             name: "log(x)".to_string(),
             latex: "\\ln(x)".to_string(),
@@ -125,8 +111,7 @@ pub fn simplify_trig_to_poly_log(
         });
     }
 
-    // Ekstra ledd: x * ln(x)
-    if config.include_x_ln {
+    if include_x_ln {
         basis.push(BasisDef {
             name: "x*log(x)".to_string(),
             latex: "x\\ln(x)".to_string(),
@@ -136,8 +121,7 @@ pub fn simplify_trig_to_poly_log(
         });
     }
 
-    // Ekstra ledd: 1/x
-    if config.include_inv_x {
+    if include_inv_x {
         basis.push(BasisDef {
             name: "1/x".to_string(),
             latex: "\\frac{1}{x}".to_string(),
@@ -147,7 +131,6 @@ pub fn simplify_trig_to_poly_log(
         });
     }
 
-    // Konstantledd: 1
     basis.push(BasisDef {
         name: "1".to_string(),
         latex: "1".to_string(),
@@ -157,13 +140,11 @@ pub fn simplify_trig_to_poly_log(
     });
 
     let m = basis.len();
-
-    // 2. Bygg normal-ligningene (A^T * A) * c = A^T * y
     let mut gram = vec![vec![0.0f64; m]; m];
     let mut rhs = vec![0.0f64; m];
 
     let mut phi_row = vec![0.0f64; m];
-    for (&x, &y) in x_vals.iter().zip(&y_orig) {
+    for (&x, &y) in x_vals.iter().zip(y_orig.iter()) {
         for j in 0..m {
             phi_row[j] = (basis[j].eval_fn)(x);
         }
@@ -172,13 +153,11 @@ pub fn simplify_trig_to_poly_log(
             let pr = phi_row[r];
             rhs[r] += y * pr;
             for c in r..m {
-                let v = pr * phi_row[c];
-                gram[r][c] += v;
+                gram[r][c] += pr * phi_row[c];
             }
         }
     }
 
-    // Symmetriser og legg til Tikhonov-regularisering for numerisk stabilitet
     for r in 0..m {
         for c in r..m {
             if r != c {
@@ -188,7 +167,6 @@ pub fn simplify_trig_to_poly_log(
         gram[r][r] += 1e-8;
     }
 
-    // 3. Gauss-Jordan eliminasjon
     for r in 0..m {
         let mut pivot = gram[r][r];
         if pivot.abs() < 1e-12 {
@@ -212,8 +190,6 @@ pub fn simplify_trig_to_poly_log(
     }
 
     let coeffs = rhs;
-
-    // 4. Bygg term-liste og filtrer neglisjerbare ledd
     let max_abs_c = coeffs.iter().map(|c| c.abs()).fold(0.0f64, f64::max);
     let thresh = (max_abs_c * 1e-4).max(1e-6);
 
@@ -232,13 +208,12 @@ pub fn simplify_trig_to_poly_log(
         }
     }
 
-    // 5. Evaluer kurve og beregn R^2, RMSE og maksavvik
     let mut approx_y = Vec::with_capacity(n);
     let mut error_y = Vec::with_capacity(n);
     let mut rss = 0.0;
     let mut max_err = 0.0f64;
 
-    for (&x, &y_true) in x_vals.iter().zip(&y_orig) {
+    for (&x, &y_true) in x_vals.iter().zip(y_orig.iter()) {
         let mut y_hat = 0.0;
         for (j, def) in basis.iter().enumerate() {
             y_hat += coeffs[j] * (def.eval_fn)(x);
@@ -259,12 +234,11 @@ pub fn simplify_trig_to_poly_log(
     let r_squared = (1.0 - (rss / tss)).clamp(0.0, 1.0);
     let rmse = (rss / n as f64).sqrt();
 
-    // 6. Formater formelstrenger
     let simplified_formula = format_model_string(&terms, false);
     let python_formula = format_python_string(&terms);
     let latex_formula = format_latex_string(&terms);
 
-    Ok(PolyLogSimplifierResult {
+    PolyLogSimplifierResult {
         original_formula: format!("{}", func),
         simplified_formula,
         python_formula,
@@ -275,11 +249,97 @@ pub fn simplify_trig_to_poly_log(
         max_error: max_err,
         a,
         b,
-        sample_x: x_vals,
-        orig_y: y_orig,
+        sample_x: x_vals.to_vec(),
+        orig_y: y_orig.to_vec(),
         approx_y,
         error_y,
-    })
+    }
+}
+
+/// Forenkler et trigonometrisk uttrykk til et polynom- og logaritme-uttrykk over [a, b]
+pub fn simplify_trig_to_poly_log(
+    func: &TrigFunction,
+    a: f64,
+    b: f64,
+    config: &PolyLogBasisConfig,
+) -> Result<PolyLogSimplifierResult, String> {
+    if a >= b {
+        return Err("Startpunkt 'a' må være strengt mindre enn sluttpunkt 'b'.".to_string());
+    }
+    if !config.auto_terms && config.include_ln && a <= 0.0 {
+        return Err("For å inkludere log(x) må definisjonsmengden være positiv (a > 0, f.eks. a = 0.1 eller 0.5).".to_string());
+    }
+
+    let n = config.num_samples.clamp(50, 2000);
+    let step = (b - a) / (n - 1) as f64;
+
+    let mut x_vals = Vec::with_capacity(n);
+    let mut y_orig = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let x = a + (i as f64) * step;
+        let y = func.eval(x);
+        x_vals.push(x);
+        y_orig.push(y);
+    }
+
+    if !config.auto_terms {
+        return Ok(fit_single_candidate(
+            func,
+            a,
+            b,
+            &x_vals,
+            &y_orig,
+            config.max_degree,
+            config.include_ln,
+            config.include_x_ln,
+            config.include_inv_x,
+        ));
+    }
+
+    // Auto-modus: Test ulike polynomgrader (1..=6) og relevante kombinasjoner av logaritme- og brøkledd
+    let mut candidates: Vec<PolyLogSimplifierResult> = Vec::new();
+    let can_log = a > 0.0;
+
+    for deg in 1..=6 {
+        // Ren polynom
+        candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, false, false, false));
+
+        if can_log {
+            // Polynom + ln(x)
+            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, false, false));
+            // Polynom + ln(x) + x*ln(x)
+            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, true, false));
+            // Polynom + ln(x) + 1/x
+            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, false, true));
+            // Polynom + ln(x) + x*ln(x) + 1/x
+            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, true, true));
+        }
+    }
+
+    // Sorter kandidatene etter parsimoni og nøyaktighet:
+    // 1. Dersom R² >= 0.999: velg kandidaten med FÆRREST ledd (enklest mulig formel).
+    // 2. Ellers: minimer BIC (Bayesian Information Criterion).
+    let n_f = n as f64;
+    candidates.sort_by(|c1, c2| {
+        let tier1 = c1.r_squared >= 0.999;
+        let tier2 = c2.r_squared >= 0.999;
+        if tier1 && tier2 {
+            c1.terms.len().cmp(&c2.terms.len())
+                .then_with(|| c2.r_squared.partial_cmp(&c1.r_squared).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| c1.rmse.partial_cmp(&c2.rmse).unwrap_or(std::cmp::Ordering::Equal))
+        } else if tier1 {
+            std::cmp::Ordering::Less
+        } else if tier2 {
+            std::cmp::Ordering::Greater
+        } else {
+            let bic1 = n_f * (c1.rmse.powi(2) + 1e-12).ln() + (c1.terms.len() as f64) * n_f.ln();
+            let bic2 = n_f * (c2.rmse.powi(2) + 1e-12).ln() + (c2.terms.len() as f64) * n_f.ln();
+            bic1.partial_cmp(&bic2).unwrap_or(std::cmp::Ordering::Equal)
+        }
+    });
+
+    candidates.into_iter().next().ok_or_else(|| "Ingen gyldig modell funnet".to_string())
 }
 
 fn format_model_string(terms: &[PolyLogTerm], _for_latex: bool) -> String {
@@ -378,6 +438,7 @@ mod tests {
             include_x_ln: false,
             include_inv_x: false,
             num_samples: 200,
+            auto_terms: false,
         };
 
         let res = simplify_trig_to_poly_log(&func, 0.5, 5.0, &config)
@@ -399,6 +460,7 @@ mod tests {
             include_x_ln: false,
             include_inv_x: false,
             num_samples: 100,
+            auto_terms: false,
         };
 
         let res = simplify_trig_to_poly_log(&func, 1.0, 4.0, &config).unwrap();
@@ -406,5 +468,15 @@ mod tests {
         assert!(res.simplified_formula.contains("x^2"));
         assert!(res.simplified_formula.contains("log(x)"));
     }
-}
+    #[test]
+    fn test_poly_log_auto_terms() {
+        let func = TrigFunction::parse("sin(x) + cos(2x)").unwrap();
+        let config = PolyLogBasisConfig::default(); // auto_terms = true
+        assert!(config.auto_terms);
 
+        let res = simplify_trig_to_poly_log(&func, 0.5, 5.0, &config).unwrap();
+        assert!(res.r_squared > 0.95);
+        assert!(!res.terms.is_empty());
+        println!("Auto-forenklet formel: {} ({} ledd, R2={})", res.simplified_formula, res.terms.len(), res.r_squared);
+    }
+}
