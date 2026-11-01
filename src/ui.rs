@@ -2661,7 +2661,7 @@ impl ExtremaApp {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Forenklet modell P(x):").strong().color(theme.text_accent).size(14.0));
-                        ui.label(RichText::new(&res.simplified_formula).monospace().strong().size(15.0).color(theme.text_primary));
+                        ui.label(RichText::new(format!("({} ledd)", res.terms.len())).size(11.5).color(theme.text_secondary));
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button(RichText::new("📋 Kopier P(x)").size(11.0)).clicked() {
@@ -2669,6 +2669,20 @@ impl ExtremaApp {
                             }
                         });
                     });
+
+                    ui.add_space(3.0);
+
+                    if res.terms.len() > 7 || res.simplified_formula.len() > 80 {
+                        egui::ScrollArea::horizontal()
+                            .id_salt("poly_log_fx_scroll")
+                            .auto_shrink([false, true])
+                            .max_height(45.0)
+                            .show(ui, |ui| {
+                                ui.label(RichText::new(&res.simplified_formula).monospace().strong().size(14.0).color(theme.text_primary));
+                            });
+                    } else {
+                        ui.label(RichText::new(&res.simplified_formula).monospace().strong().size(14.0).color(theme.text_primary));
+                    }
                 });
 
             ui.add_space(5.0);
@@ -2737,7 +2751,7 @@ impl ExtremaApp {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("📊 Identifiserte ledd:").strong().color(theme.text_primary).size(12.5));
-                        ui.label(RichText::new(format!("({} ledd totalt - maks 7 synlige samtidig, bruk rullegardin)", res.terms.len()))
+                        ui.label(RichText::new(format!("({} ledd totalt - maks 7 synlige samtidig, rullegardin ved > 7 ledd)", res.terms.len()))
                             .size(11.0).color(theme.text_secondary));
                     });
                     ui.add_space(2.0);
@@ -2749,7 +2763,7 @@ impl ExtremaApp {
                     egui::ScrollArea::vertical()
                         .id_salt("poly_log_terms_rullegardin_scroll")
                         .max_height(scroll_max_h)
-                        .auto_shrink([false, false])
+                        .auto_shrink([false, true])
                         .show(ui, |ui| {
                             egui::Grid::new("poly_log_terms_grid")
                                 .striped(true)
