@@ -153,6 +153,7 @@ pub struct ExtremaApp {
     pub poly_log_b: f64,
     pub poly_log_degree: usize,
     pub poly_log_auto_terms: bool,
+    pub poly_log_auto_ab: bool,
     pub poly_log_include_ln: bool,
     pub poly_log_include_x_ln: bool,
     pub poly_log_include_inv_x: bool,
@@ -254,6 +255,7 @@ impl Default for ExtremaApp {
             poly_log_b: 6.28,
             poly_log_degree: 2,
             poly_log_auto_terms: true,
+            poly_log_auto_ab: true,
             poly_log_include_ln: true,
             poly_log_include_x_ln: false,
             poly_log_include_inv_x: false,
@@ -2466,6 +2468,16 @@ impl ExtremaApp {
                     if ui.button(RichText::new("📋 Hent fra analyse").size(11.5)).on_hover_text("Bruk den nåværende formelen fra trigonometrisk analyse").clicked() {
                         if let Some(func) = &self.current_func {
                             self.poly_log_input = format!("{}", func);
+                            if self.poly_log_auto_ab {
+                                if self.x_max > self.x_min && self.x_max > 0.2 {
+                                    self.poly_log_a = (self.x_min.max(0.1) * 100.0).round() / 100.0;
+                                    self.poly_log_b = (self.x_max.max(self.poly_log_a + 0.5) * 100.0).round() / 100.0;
+                                } else {
+                                    let (da, db) = crate::poly_log_simplifier::auto_detect_domain(func);
+                                    self.poly_log_a = da;
+                                    self.poly_log_b = db;
+                                }
+                            }
                             self.poly_log_result = None;
                         }
                     }
@@ -2474,6 +2486,13 @@ impl ExtremaApp {
                         if let Ok(st) = self.service_controller.state.read() {
                             if !st.latest_status.formula.is_empty() && st.latest_status.formula != "f(x) = 0" {
                                 self.poly_log_input = st.latest_status.formula.replace("f(x) = ", "");
+                                if self.poly_log_auto_ab {
+                                    if let Ok(func) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                        let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&func);
+                                        self.poly_log_a = da;
+                                        self.poly_log_b = db;
+                                    }
+                                }
                                 self.poly_log_result = None;
                             }
                         }
@@ -2486,18 +2505,42 @@ impl ExtremaApp {
                     ui.label(RichText::new("Hurtigvalg:").size(11.0).color(theme.text_secondary));
                     if ui.small_button("sin(x) + cos(2x)").clicked() {
                         self.poly_log_input = "sin(x) + cos(2x)".to_string();
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
                         self.poly_log_result = None;
                     }
                     if ui.small_button("3*sin(2x) + cos(4x)").clicked() {
                         self.poly_log_input = "3*sin(2x) + cos(4x)".to_string();
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
                         self.poly_log_result = None;
                     }
                     if ui.small_button("sin(x) + 0.5*sin(3x)").clicked() {
                         self.poly_log_input = "sin(x) + 0.5*sin(3x)".to_string();
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
                         self.poly_log_result = None;
                     }
                     if ui.small_button("cos(x)").clicked() {
                         self.poly_log_input = "cos(x)".to_string();
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
                         self.poly_log_result = None;
                     }
                 });
@@ -2507,15 +2550,40 @@ impl ExtremaApp {
                 // Innstillinger for basis-funksjoner og intervall
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Definisjonsområde [a, b]:").strong().color(theme.text_secondary).size(12.0));
-                    ui.add(egui::DragValue::new(&mut self.poly_log_a).speed(0.05).range(0.01..=100.0).prefix("a: "))
+                    let d_a = ui.add(egui::DragValue::new(&mut self.poly_log_a).speed(0.05).range(0.01..=100.0).prefix("a: "))
                         .on_hover_text("Startverdi (må være > 0 for at log(x) skal være definert)");
-                    ui.add(egui::DragValue::new(&mut self.poly_log_b).speed(0.05).range(0.05..=100.0).prefix("b: "))
+                    let d_b = ui.add(egui::DragValue::new(&mut self.poly_log_b).speed(0.05).range(0.05..=100.0).prefix("b: "))
                         .on_hover_text("Sluttverdi for tilnærmingen");
+                    if d_a.changed() || d_b.changed() {
+                        self.poly_log_auto_ab = false;
+                    }
+
+                    if ui.checkbox(&mut self.poly_log_auto_ab, RichText::new("Auto [a,b]").strong().color(theme.text_accent))
+                        .on_hover_text("Tilpasser automatisk definisjonsområde [a, b] til bølgens fundamentale periode")
+                        .changed()
+                    {
+                        if self.poly_log_auto_ab {
+                            if let Ok(func) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&func);
+                                self.poly_log_a = da;
+                                self.poly_log_b = db;
+                            }
+                        }
+                    }
+
+                    if ui.small_button("🎯 Auto [a,b]").on_hover_text("Sett [a, b] automatisk ut fra formelens periode").clicked() {
+                        self.poly_log_auto_ab = true;
+                        if let Ok(func) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                            let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&func);
+                            self.poly_log_a = da;
+                            self.poly_log_b = db;
+                        }
+                    }
 
                     ui.separator();
 
                     ui.checkbox(&mut self.poly_log_auto_terms, RichText::new("Auto antall ledd").strong().color(theme.text_accent))
-                        .on_hover_text("Finner automatisk optimalt antall ledd og polynomgrad for best mulig nøyaktighet (R²)");
+                        .on_hover_text("Finner automatisk optimalt antall ledd og polynomgrad for best mulig nøyaktighet (R² inntil 0.9999+)");
 
                     if !self.poly_log_auto_terms {
                         ui.separator();
@@ -2541,12 +2609,17 @@ impl ExtremaApp {
                         if ui.button(RichText::new("⚡ Beregn Polynom & Log").strong().color(theme.text_success).size(12.5)).clicked() {
                             match crate::model::TrigFunction::parse(&self.poly_log_input) {
                                 Ok(func) => {
+                                    if self.poly_log_auto_ab {
+                                        let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&func);
+                                        self.poly_log_a = da;
+                                        self.poly_log_b = db;
+                                    }
                                     let config = crate::poly_log_simplifier::PolyLogBasisConfig {
                                         max_degree: self.poly_log_degree,
                                         include_ln: self.poly_log_include_ln,
                                         include_x_ln: self.poly_log_include_x_ln,
                                         include_inv_x: self.poly_log_include_inv_x,
-                                        num_samples: 300,
+                                        num_samples: 600,
                                         auto_terms: self.poly_log_auto_terms,
                                     };
                                     match crate::poly_log_simplifier::simplify_trig_to_poly_log(&func, self.poly_log_a, self.poly_log_b, &config) {
@@ -2588,9 +2661,6 @@ impl ExtremaApp {
                         ui.label(RichText::new(&res.simplified_formula).monospace().strong().size(15.0).color(theme.text_primary));
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(RichText::new("📋 Kopier LaTeX").size(11.0)).clicked() {
-                                ui.ctx().copy_text(res.latex_formula.clone());
-                            }
                             if ui.button(RichText::new("📋 Kopier P(x)").size(11.0)).clicked() {
                                 ui.ctx().copy_text(res.simplified_formula.clone());
                             }
