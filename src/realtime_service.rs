@@ -210,7 +210,26 @@ impl OnlineTrigFitter {
         // Sorter etter høyeste spektrale energi
         scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-        let active_count = self.count.min(max_terms.clamp(1, 16)).min(scores.len());
+        let max_power = scores.first().map(|s| s.0).unwrap_or(0.0);
+        if max_power < 1e-9 {
+            return RealtimeModelStatus {
+                count: self.count,
+                formula: "f(x) = 0".to_string(),
+                terms_count: 0,
+                r_squared: 0.0,
+                rmse: 0.0,
+                last_update_us: t0.elapsed().as_micros(),
+                current_func: None,
+            };
+        }
+
+        // Automatisk terskel for signifikante ledd, akkurat som i trigonometrisk analyse / csv_analyzer
+        // 0.25% av toppeffekt (~5% amplitude) skiller reelle ledd fra spektral lekkasje/støy
+        let energy_threshold = (max_power * 0.0025).max(1e-7);
+
+        // Øvre grense for antall ledd (inntil 100, begrenset av antall datapunkter N)
+        let upper_cap = if max_terms == 0 { 100 } else { max_terms.clamp(1, 100) };
+        let active_count = self.count.min(upper_cap).min(scores.len());
         if active_count == 0 {
             return RealtimeModelStatus {
                 count: self.count,
@@ -237,8 +256,13 @@ impl OnlineTrigFitter {
             1
         };
 
+        // Velg ledd adaptivt: kun signifikante ledd over terskelen inkluderes
         let mut idx: Vec<usize> = Vec::with_capacity(active_count);
-        for &(_p, cand_idx) in &scores {
+        for &(p, cand_idx) in &scores {
+            // Avbryt når leddets energi faller under terskelen for signifikans (støy)
+            if !idx.is_empty() && p < energy_threshold {
+                break;
+            }
             let cand_k = (cand_idx / 2) + 1;
             let cand_is_cos = cand_idx % 2 == 1;
             let mut collides = false;
@@ -338,12 +362,21 @@ impl OnlineTrigFitter {
         }
 
         let coeffs = rhs;
+        let max_coeff = coeffs.iter().map(|c| c.abs()).fold(0.0f64, f64::max);
+        let coeff_thresh = (max_coeff * 0.02).max(1e-4);
+
         let mut c_dot_b = 0.0f64;
         let mut trig_terms = Vec::new();
 
         for r in 0..m {
             let c_val = coeffs[r];
             let term_idx = idx[r];
+
+            // Akkurat som i csv_analyzer: Forkast ledd med neglisjerbar amplitude (< 2% av største ledd)
+            if c_val.abs() < coeff_thresh {
+                continue;
+            }
+
             c_dot_b += c_val * self.rhs_b[term_idx];
 
             let rounded = (c_val * 10_000.0).round() / 10_000.0;
@@ -401,7 +434,7 @@ impl RealtimeServiceState {
     pub fn new(max_k: usize) -> Self {
         Self {
             fitter: OnlineTrigFitter::new(max_k),
-            max_terms: 4,
+            max_terms: 100,
             latest_status: RealtimeModelStatus::default(),
             log_messages: VecDeque::with_capacity(100),
             max_log_messages: 100,
@@ -724,6 +757,32 @@ pub fn handle_http_get(
             s.count, s.formula, s.terms_count, s.r_squared, s.rmse
         );
         (json, true)
+    } else if p.eq_ignore_ascii_case("terms") || p.eq_ignore_ascii_case("max_terms") {
+        let mut new_terms = None;
+        for param in query.split('&') {
+            if let Some((k, v)) = param.split_once('=') {
+                if k.eq_ignore_ascii_case("n") || k.eq_ignore_ascii_case("terms") || k.eq_ignore_ascii_case("count") {
+                    new_terms = v.parse::<usize>().ok();
+                }
+            }
+        }
+        if let Some(t) = new_terms {
+            let clamped = t.clamp(1, 100);
+            let mut st = state.write().unwrap();
+            st.max_terms = clamped;
+            let s = st.fitter.solve_model(clamped);
+            st.latest_status = s.clone();
+            st.log(format!("HTTP GET /terms -> Maks ledd satt til {}", clamped));
+            let json = format!(
+                "{{\"status\":\"ok\",\"max_terms\":{},\"count\":{},\"terms\":{},\"fx\":\"{}\",\"r_squared\":{:.6},\"rmse\":{:.6}}}",
+                clamped, s.count, s.terms_count, s.formula, s.r_squared, s.rmse
+            );
+            (json, true)
+        } else {
+            let cur_terms = if let Ok(st) = state.read() { st.max_terms } else { 4 };
+            let json = format!("{{\"status\":\"ok\",\"max_terms\":{}}}", cur_terms);
+            (json, true)
+        }
     } else if p.eq_ignore_ascii_case("reset") {
         let mut st = state.write().unwrap();
         st.fitter.reset();
@@ -846,6 +905,33 @@ fn handle_client(
                         st.log(format!("QUIT mottatt fra {}", peer_addr));
                     }
                     break;
+                }
+
+                // Støtte for å sette eller lese maks antall ledd (inntil 100)
+                if trimmed.to_ascii_uppercase().starts_with("TERMS") {
+                    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        if let Ok(n) = parts[1].parse::<usize>() {
+                            let clamped = n.clamp(1, 100);
+                            let mut st = state.write().unwrap();
+                            st.max_terms = clamped;
+                            let s = st.fitter.solve_model(clamped);
+                            st.latest_status = s.clone();
+                            st.log(format!("TCP TERMS {} mottatt -> Maks ledd satt til {}", n, clamped));
+                            let resp = format!(
+                                "{{\"status\":\"ok\",\"max_terms\":{},\"count\":{},\"terms\":{},\"fx\":\"{}\",\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                                clamped, s.count, s.terms_count, s.formula, s.r_squared, s.rmse
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                            let _ = stream.flush();
+                            continue;
+                        }
+                    }
+                    let cur_terms = if let Ok(st) = state.read() { st.max_terms } else { 4 };
+                    let resp = format!("{{\"status\":\"ok\",\"max_terms\":{}}}\n", cur_terms);
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                    continue;
                 }
 
                 // 2. Støtte for STATUS
@@ -1216,6 +1302,14 @@ mod tests {
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
             .expect("Kunne ikke koble til test-server");
 
+        // Test TERMS-kommando
+        stream.write_all(b"TERMS 42\n").unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"max_terms\":42"));
+
         // Send 1. verdi
         stream.write_all(b"0.5, 1.0\n").unwrap();
         stream.flush().unwrap();
@@ -1255,6 +1349,17 @@ mod tests {
         let port = 8798;
         let mut controller = RealtimeServiceController::new(port, 16);
         controller.start().expect("Kunne ikke starte test-tjeneste");
+
+        // 0. Test GET /terms?n=35
+        {
+            let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port)).unwrap();
+            stream.write_all(b"GET /terms?n=35 HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            stream.flush().unwrap();
+            let mut reply = String::new();
+            let mut reader = BufReader::new(stream);
+            reader.read_to_string(&mut reply).unwrap();
+            assert!(reply.contains("\"max_terms\":35"));
+        }
 
         // 1. Test GET /status
         {
@@ -1330,5 +1435,24 @@ mod tests {
         assert!(res.formula.contains("1500"), "Mangler sin(1500x): {}", res.formula);
         assert!(res.formula.contains("4500"), "Mangler cos(4500x): {}", res.formula);
         assert!(res.r_squared > 0.98, "R^2 var {:.4}", res.r_squared);
+    }
+#[test]
+    fn test_max_terms_up_to_100() {
+        let mut fitter = OnlineTrigFitter::new(64);
+        // Generer signal med 20 ulike sinus- og cosinusledd
+        for i in 0..150 {
+            let x = (i as f64) * 0.05;
+            let mut y = 0.0;
+            for k in 1..=10 {
+                y += ((k as f64) * 0.1) * (k as f64 * x).sin();
+                y += ((k as f64) * 0.08) * (k as f64 * x).cos();
+            }
+            fitter.add_point(x, y);
+        }
+
+        // Med max_terms = 50 skal den kunne returnere inntil 20 signifikante ledd (mer enn 16)
+        let res = fitter.solve_model(50);
+        assert!(res.terms_count >= 18, "Forventet minst 18 ledd, fikk {}", res.terms_count);
+        assert!(res.r_squared > 0.99, "R^2 var {:.4}", res.r_squared);
     }
 }

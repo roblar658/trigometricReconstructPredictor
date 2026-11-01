@@ -1821,17 +1821,7 @@ impl ExtremaApp {
                         self.service_controller.reinit_fitter(self.service_max_k);
                     }
 
-                    ui.label(RichText::new("Maks ledd:").color(theme.text_secondary).size(12.0));
-                    let terms_resp = ui.add(
-                        egui::Slider::new(&mut self.service_max_terms, 1..=16)
-                            .text(""),
-                    )
-                    .on_hover_text("Maksimalt antall signifikante trigonometriske ledd i f(x)");
-                    if terms_resp.changed() {
-                        if let Ok(mut st) = self.service_controller.state.write() {
-                            st.max_terms = self.service_max_terms;
-                        }
-                    }
+
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
