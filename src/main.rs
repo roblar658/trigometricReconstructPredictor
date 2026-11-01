@@ -196,6 +196,15 @@ enum Commands {
         #[arg(long, default_value_t = 32, help = "Maksimal frekvens k i den inkrementelle modellen")]
         max_k: usize,
     },
+
+    /// Koble til en kjørende sensor-tjeneste via terminal (interaktiv TCP-klient)
+    Client {
+        #[arg(long, default_value_t = 8765, help = "TCP-port å koble til")]
+        port: u16,
+
+        #[arg(long, default_value = "127.0.0.1", help = "Vertsadresse å koble til")]
+        host: String,
+    },
 }
 
 fn main() {
@@ -239,6 +248,9 @@ async fn run_cli_command(command: Commands) {
             while controller.is_running.load(std::sync::atomic::Ordering::SeqCst) {
                 std::thread::sleep(std::time::Duration::from_millis(500));
             }
+        }
+        Commands::Client { port, host } => {
+            run_interactive_client(host, port);
         }
         Commands::Classify {
             formula,
@@ -746,4 +758,129 @@ async fn run_full_demonstration() {
     }
 
     println!("\n{}", "Demonstrasjon fullført uten feil!".green().bold());
+}
+
+
+fn run_interactive_client(host: String, port: u16) {
+    use std::io::{stdin, stdout, BufRead, BufReader, Write};
+    use std::net::TcpStream;
+
+    println!("{}", "========================================================================".cyan());
+    println!("{}", format!(" ⚡ INTERAKTIV SENSOR-KLIENT (TCP: {}:{})", host, port).white().bold());
+    println!(" Kommandoer du kan skrive:");
+    println!("   • 1, 2 eller 3       : Send 1, 2 eller 3 sensorverdier automatisk");
+    println!("   • x, y (f.eks 0.5, 1): Send et spesifikt målepunkt");
+    println!("   • batch              : Send en testbatch på 10 verdier");
+    println!("   • status             : Hent nåværende f(x) og N fra tjenesten");
+    println!("   • reset              : Nullstill modellen");
+    println!("   • quit eller exit    : Avslutt forbindelsen rent");
+    println!("{}", "========================================================================".cyan());
+
+    let addr = format!("{}:{}", host, port);
+    let mut stream = match TcpStream::connect(&addr) {
+        Ok(s) => {
+            println!(" Tilkoblet tjenesten på {}!", addr);
+            s
+        }
+        Err(e) => {
+            eprintln!("Kunne ikke koble til {}: {}", addr, e);
+            eprintln!("Tips: Start tjenesten først, enten fra GUI (Fane '⚡ Sanntids Sensor-Service' -> '▶ Start Tjeneste')");
+            eprintln!("eller fra en annen terminal med: gpu_extrema_classifier.exe service --port {}", port);
+            return;
+        }
+    };
+
+    let mut reader = BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Feil ved kloning av strøm: {}", e);
+            return;
+        }
+    });
+
+    let mut input = String::new();
+    let mut sim_x = 0.0f64;
+
+    loop {
+        print!("sensor> ");
+        let _ = stdout().flush();
+        input.clear();
+        if stdin().read_line(&mut input).is_err() || input.trim().is_empty() {
+            continue;
+        }
+
+        let cmd = input.trim();
+        if cmd.eq_ignore_ascii_case("quit") || cmd.eq_ignore_ascii_case("exit") {
+            let _ = stream.write_all(b"QUIT\n");
+            let _ = stream.flush();
+            let mut reply = String::new();
+            let _ = reader.read_line(&mut reply);
+            println!("< {}", reply.trim());
+            println!("Tilkobling avsluttet.");
+            break;
+        } else if cmd == "1" {
+            let x = sim_x;
+            let y = x.sin() + 0.5 * (2.0 * x).cos();
+            sim_x += 0.1;
+            let line = format!("{:.3}, {:.3}\n", x, y);
+            let _ = stream.write_all(line.as_bytes());
+            let _ = stream.flush();
+            let mut reply = String::new();
+            let _ = reader.read_line(&mut reply);
+            println!("< Sendte ({:.3}, {:.3}) -> {}", x, y, reply.trim());
+        } else if cmd == "2" {
+            for _ in 0..2 {
+                let x = sim_x;
+                let y = x.sin() + 0.5 * (2.0 * x).cos();
+                sim_x += 0.1;
+                let line = format!("{:.3}, {:.3}\n", x, y);
+                let _ = stream.write_all(line.as_bytes());
+                let _ = stream.flush();
+                let mut reply = String::new();
+                let _ = reader.read_line(&mut reply);
+                println!("< Punkt ({:.3}, {:.3}) -> {}", x, y, reply.trim());
+            }
+        } else if cmd == "3" {
+            for _ in 0..3 {
+                let x = sim_x;
+                let y = x.sin() + 0.5 * (2.0 * x).cos();
+                sim_x += 0.1;
+                let line = format!("{:.3}, {:.3}\n", x, y);
+                let _ = stream.write_all(line.as_bytes());
+                let _ = stream.flush();
+                let mut reply = String::new();
+                let _ = reader.read_line(&mut reply);
+                println!("< Punkt ({:.3}, {:.3}) -> {}", x, y, reply.trim());
+            }
+        } else if cmd.eq_ignore_ascii_case("batch") || cmd == "b" {
+            let mut batch_msg = String::from("BATCH\n");
+            for _ in 0..10 {
+                let x = sim_x;
+                let y = x.sin() + 0.5 * (2.0 * x).cos();
+                sim_x += 0.1;
+                batch_msg.push_str(&format!("{:.3}, {:.3}\n", x, y));
+            }
+            batch_msg.push_str("ENDBATCH\n");
+            let _ = stream.write_all(batch_msg.as_bytes());
+            let _ = stream.flush();
+            let mut reply = String::new();
+            let _ = reader.read_line(&mut reply);
+            println!("< {}", reply.trim());
+        } else {
+            let line = format!("{}\n", cmd);
+            let _ = stream.write_all(line.as_bytes());
+            let _ = stream.flush();
+            let mut reply = String::new();
+            if let Ok(n) = reader.read_line(&mut reply) {
+                if n > 0 {
+                    println!("< {}", reply.trim());
+                } else {
+                    println!("(Server lukket tilkoblingen)");
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
 }

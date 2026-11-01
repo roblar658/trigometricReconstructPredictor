@@ -805,20 +805,32 @@ impl eframe::App for ExtremaApp {
         ui.ctx().set_visuals(visuals);
         ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
 
-        // --- 1. TOPP-PANEL: SLANK HEADER & NAVIGASJON ---
+        // --- 1. TOPP-PANEL: TITTEL & GPU-STATUS ---
         ui.horizontal(|ui| {
             ui.heading(
                 RichText::new("⚡ Trigonometrisk Ekstremanalyse & Rekonstruksjon")
                     .color(theme.text_accent)
                     .strong()
-                    .size(16.5),
+                    .size(17.0),
             );
 
-            ui.separator();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    RichText::new(format!("GPU: {} ({})", self.gpu_adapter_name, self.gpu_backend_name))
+                        .color(theme.text_secondary)
+                        .monospace()
+                        .size(11.0),
+                );
+            });
+        });
 
+        ui.add_space(2.0);
+
+        // --- 2. FANE-KNAPPER UNDER TITTELEN ---
+        ui.horizontal(|ui| {
             let tab_classifier = ui.selectable_label(
                 self.tab == ActiveTab::Classifier,
-                RichText::new("📈 Funksjonsanalyse & Graf").strong().size(12.5),
+                RichText::new("📈 Funksjonsanalyse & Graf").strong().size(13.0),
             );
             if tab_classifier.clicked() {
                 self.tab = ActiveTab::Classifier;
@@ -826,7 +838,7 @@ impl eframe::App for ExtremaApp {
 
             let tab_csv = ui.selectable_label(
                 self.tab == ActiveTab::CsvAnalysis,
-                RichText::new("📂 CSV-Datasett & Formelgjenkjenning").strong().size(12.5),
+                RichText::new("📂 CSV-Datasett & Formelgjenkjenning").strong().size(13.0),
             );
             if tab_csv.clicked() {
                 self.tab = ActiveTab::CsvAnalysis;
@@ -834,7 +846,7 @@ impl eframe::App for ExtremaApp {
 
             let tab_service = ui.selectable_label(
                 self.tab == ActiveTab::RealtimeService,
-                RichText::new("⚡ Sanntids Sensor-Service").strong().size(12.5),
+                RichText::new("⚡ Sanntids Sensor-Service").strong().size(13.0),
             );
             if tab_service.clicked() {
                 self.tab = ActiveTab::RealtimeService;
@@ -842,21 +854,11 @@ impl eframe::App for ExtremaApp {
 
             let tab_help = ui.selectable_label(
                 self.tab == ActiveTab::Help,
-                RichText::new("❓ Hjelp").strong().size(12.5),
+                RichText::new("❓ Hjelp").strong().size(13.0),
             );
             if tab_help.clicked() {
                 self.tab = ActiveTab::Help;
             }
-
-            // Minimalistisk topplinje: kun GPU-info til høyre
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    RichText::new(format!("GPU: {} ({})", self.gpu_adapter_name, self.gpu_backend_name))
-                        .color(theme.text_secondary)
-                        .monospace()
-                        .size(10.5),
-                );
-            });
         });
 
         ui.horizontal(|ui| {
@@ -2187,21 +2189,43 @@ impl ExtremaApp {
                         });
                 });
 
-            // Kolonne 2: Sikkerhet & Sensor-API
+            // Kolonne 2: Sikkerhet & Terminal-tilgang
             egui::Frame::new()
                 .fill(theme.bg_card)
                 .stroke(theme.border_stroke)
                 .inner_margin(8)
                 .corner_radius(6)
                 .show(&mut cols[1], |ui| {
-                    ui.label(RichText::new("🛡 Sikkerhet & TCP Sensor-Protokoll").strong().color(theme.text_accent).size(12.5));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("🖥️ Tilgang via Terminal (TCP)").strong().color(theme.text_accent).size(12.5));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(RichText::new("🚀 Start Terminal-Klient").strong().color(Color32::WHITE).size(11.0)).clicked() {
+                                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("gpu_extrema_classifier.exe"));
+                                let _ = Command::new("cmd").args([
+                                    "/c", "start", "powershell", "-NoExit", "-Command",
+                                    &format!("& '{}' client --port {}; pause", exe.display(), self.service_port)
+                                ]).spawn();
+                            }
+                        });
+                    });
+
                     ui.separator();
-                    ui.label(RichText::new("• 0 Injection-sårbarhet: Streng IEEE 754 flyttalls-parsing. Ingen kommandotolking.").size(11.0).color(theme.text_secondary));
-                    ui.label(RichText::new("• Minnebeskyttelse: Linjebuffer begrenset til 2048 bytes (avviser buffer overflow/DoS).").size(11.0).color(theme.text_secondary));
-                    ui.label(RichText::new("• O(1) Inkrementell oppdatering: Gram-matrisen oppdateres direkte uten å iterere over gamle data.").size(11.0).color(theme.text_secondary));
-                    ui.label(RichText::new("• Format: Send 'x, y\\n' eller JSON '{\"x\":1.0,\"y\":2.0}\\n'").size(11.0).color(theme.text_primary).monospace());
-                    ui.label(RichText::new("• Batch: Send 'BATCH\\n' etterfulgt av linjer og 'ENDBATCH\\n'").size(11.0).color(theme.text_primary).monospace());
-                    ui.label(RichText::new("• Avslutt: Send 'QUIT\\n' -> lukker tilkoblingen rent.").size(11.0).color(theme.text_primary).monospace());
+                    ui.label(RichText::new(format!("• TCP-port: {} (Ren sokkel, ingen HTTP)", self.service_port)).color(theme.text_success).monospace().size(11.5));
+                    ui.add_space(2.0);
+                    ui.label(RichText::new("• Terminal-kommando (kjør i PowerShell / CMD):").color(theme.text_secondary).size(11.0));
+                    ui.label(RichText::new(format!("  .\\gpu_extrema_classifier.exe client --port {}", self.service_port)).color(theme.text_primary).monospace().size(11.0));
+                    ui.label(RichText::new(format!("  .\\client.ps1 -Port {}", self.service_port)).color(theme.text_primary).monospace().size(11.0));
+                    ui.add_space(2.0);
+                    ui.label(RichText::new("• Hurtigkommandoer i terminal-klienten:").color(theme.text_secondary).size(11.0));
+                    ui.label(RichText::new("  1, 2, 3       : Sender 1, 2 eller 3 sensorverdier").color(theme.text_primary).monospace().size(10.5));
+                    ui.label(RichText::new("  0.5, 1.2      : Sender egendefinert målepunkt (x, y)").color(theme.text_primary).monospace().size(10.5));
+                    ui.label(RichText::new("  batch         : Sender test-batch med 10 målinger").color(theme.text_primary).monospace().size(10.5));
+                    ui.label(RichText::new("  status / quit : Viser modell-status eller avslutter").color(theme.text_primary).monospace().size(10.5));
+                    ui.add_space(2.0);
+                    ui.label(RichText::new("• Sikkerhet & Ytelse:").color(theme.text_secondary).size(11.0));
+                    ui.label(RichText::new("  0 Injection: Streng IEEE 754 flyttall-validering").color(theme.text_secondary).size(10.5));
+                    ui.label(RichText::new("  O(1) oppdatering: Gram-matrisen utvides direkte uten omberegning").color(theme.text_secondary).size(10.5));
+                    ui.label(RichText::new("  Minnevern: 2048 bytes linjebuffer forhindrer DoS/overflow").color(theme.text_secondary).size(10.5));
                 });
         });
     }

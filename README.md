@@ -757,6 +757,18 @@ cargo run -- analyze-flac lyd.flac --export-csv lyd.csv --pdf lyd_rapport.pdf
 # Start sanntids sensor-lyttetjeneste i bakgrunnen over TCP (headless daemon)
 cargo run --release -- service --port 8765 --bind 127.0.0.1 --max-k 32
 
+# Koble til sanntidstjenesten interaktivt fra terminalen (ingen nettleser/HTTP kreves)
+cargo run --release -- client --port 8765
+# eller direkte via PowerShell-skriptet:
+.\client.ps1 -Port 8765
+
+# Hurtigkommandoer i terminal-klienten:
+#   1, 2 eller 3 : Sender 1, 2 eller 3 sensorverdier automatisk
+#   x, y         : Send et egendefinert målepunkt (f.eks. 0.5, 1.2)
+#   batch        : Sender en batch med 10 målinger
+#   status       : Henter nåværende f(x), antall målinger N og forklaringsgrad R²
+#   quit         : Avslutter klientsesjonen rent
+
 # Kjør alle automatiserte enhetstester (-j 1 anbefales for skånsomt minnebruk)
 cargo test -j 1
 ```
