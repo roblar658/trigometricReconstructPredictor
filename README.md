@@ -167,7 +167,8 @@ flowchart TD
         App["ExtremaApp (App State)"]
         Tab1["Fane 1: Funksjonsanalyse (Sanntidssimulering)"]
         Tab2["Fane 2: CSV & FLAC Lydspekteranalyse"]
-        Tab3["Fane 3: Teori, Teoremer & Hjelp"]
+        Tab3["Fane 3: Sanntids Sensor-Service (TCP)"]
+        Tab4["Fane 4: Teori, Teoremer & Hjelp"]
         PlotWidget["egui_plot Widget (Zoom, Pan, Sub-omraade, Markører)"]
         ScrollFx["Rullegardin f(x) (4 ledd/linje, maks 6 linjer)"]
     end
@@ -214,9 +215,22 @@ flowchart TD
         MsiPkg["WiX Toolset v4 MSI Installasjonspakke (Setup-v1.1.0.msi)"]
     end
 
+    subgraph RealtimeSvc ["7. Sanntids Sensor-Service & Inkrementell Gram (src/realtime_service.rs)"]
+        TcpServer["Sikker TCP Server (Localhost 127.0.0.1, TCP_NODELAY)"]
+        OnlineGram["Inkrementell Online Gram-akkumulering G_{N+1} = G_N + phi phi^T"]
+        InjGuard["Injeksjonsvern & Bounded Buffere (Strict IEEE 754 Float)"]
+        FastSolve["O(1) RSS- og R²-beregning uten historikk-iterasjon"]
+    end
+
     App --> Tab1
     App --> Tab2
     App --> Tab3
+    App --> Tab4
+    Tab3 --> TcpServer
+    TcpServer --> InjGuard
+    InjGuard --> OnlineGram
+    OnlineGram --> FastSolve
+    FastSolve --> Tab3
     Tab1 --> PlotWidget
     Tab2 --> PlotWidget
     Tab2 --> ScrollFx
@@ -602,7 +616,77 @@ stateDiagram-v2
         ModellIdentifisert --> LagreSubCSV: Klikker "💾 Lagre sub-omraade..."
         LagreSubCSV --> ModellIdentifisert: Skrevet til CSV
     }
+
+    state Fane3_Sanntids_Sensor_Service {
+        Idle --> TjenesteStoppet: Bruker velger Fane 3
+        TjenesteStoppet --> TjenesteAktiv: Klikker "▶ Start Tjeneste" (Lytter på TCP port)
+        TjenesteAktiv --> MottarMalinger: Sensor sender punkt (x, y) eller batch
+        MottarMalinger --> InkrementellOppdatering: O(1) Gram-akkumulering (ingen reprosessering)
+        InkrementellOppdatering --> MottarMalinger: Nytt N, oppdatert f(x), R² & sanntidsplot
+        TjenesteAktiv --> AvslutterKlient: Sensor sender QUIT
+        AvslutterKlient --> TjenesteAktiv: Sokkel lukket rent (status: bye)
+        TjenesteAktiv --> TjenesteStoppet: Klikker "⏹ Stopp Tjeneste"
+        TjenesteAktiv --> ModellNullstilt: Klikker "🔄 Nullstill modell"
+        ModellNullstilt --> TjenesteAktiv
+    }
 ```
+
+---
+
+### 3.7 Sanntids Sensor-Service & Inkrementell $\mathcal{O}(1)$ Tilpasning (`src/realtime_service.rs`)
+
+Den dedikerte fanen **⚡ Sanntids Sensor-Service** og CLI-subkommandoen `service` håndterer høypresisjons sanntidsstrømmer fra fysiske sensorer, IoT-noder og mikrokontrollere over TCP.
+
+#### A. Sekvensdiagram for Sensor-Tilkobling & Sanntidsstrøm
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Sensor as Sensor / Klient (TCP)
+    participant Server as RealtimeServer (TCP Listener)
+    participant Fitter as OnlineTrigFitter (Inkrementell Gram)
+    participant GUI as ExtremaApp (Sanntids-fane & Plot)
+
+    Note over Sensor,Server: Tilkobling etablert (127.0.0.1:8765, TCP_NODELAY)
+    Sensor->>Server: Send verdi 1: "0.5, 1.0\n"
+    Server->>Fitter: add_point(0.5, 1.0) -> O(1) Gram-oppdatering (< 1.5 µs)
+    Fitter->>Fitter: solve_model(max_terms) -> RSS & R² fra akkumulatorer
+    Server-->>Sensor: {"status":"ok","count":1,"fx":"f(x) = 2.09*sin(x)"}
+    Server->>GUI: Oppdater KPI (N=1, R²=1.0) & legg punkt til i Sanntids-plot
+
+    Sensor->>Server: Send verdi 2 & 3: "1.0, 2.0\n", "1.5, 1.5\n"
+    Server->>Fitter: add_point(x, y) -> Utvid eksisterende matrise (ingen reprosessering!)
+    Server-->>Sensor: {"status":"ok","count":3,"fx":"..."}
+    Server->>GUI: Oppdater sanntidskurve f(x) og N=3
+
+    Sensor->>Server: BATCH\n2.0, 0.5\n2.5, -0.5\nENDBATCH\n
+    Server->>Fitter: add_batch(points)
+    Server-->>Sensor: {"status":"ok","count":5,"added":2,"fx":"..."}
+
+    Note over Sensor,Server: Sikkerhetskontroll (Injeksjonsvern)
+    Sensor->>Server: "DROP TABLE users; NaN, 1.0\n"
+    Server-->>Sensor: {"status":"error","message":"Ugyldig format..."}
+
+    Note over Sensor,Server: Avslutning
+    Sensor->>Server: "QUIT\n"
+    Server-->>Sensor: {"status":"bye","count":5,"message":"Sesjon avsluttet"}
+    Server--xSensor: Sokkelforbindelse lukket rent
+```
+
+#### B. Matematisk Prinsipp for Inkrementell $\mathcal{O}(1)$ Oppdatering
+I stedet for å lagre alle historiske målepunkter $(x_i, y_i)_{i=1}^N$ og løse det fulle systemet på nytt ved hvert eneste nye punkt, akkumuleres de ortogonale trigonometriske basisvektorene $\vec{\phi}(x) = [\sin(x), \cos(x), \dots, \sin(Kx), \cos(Kx)]^T$:
+
+$$G_{N+1} = G_N + \vec{\phi}(x_{N+1})\,\vec{\phi}(x_{N+1})^T$$
+
+$$b_{N+1} = b_N + y_{N+1}\,\vec{\phi}(x_{N+1})$$
+
+$$\text{RSS}_{N+1} = \sum_{i=1}^{N+1} y_i^2 - c^T b_{N+1}$$
+
+Dette krever kun $\mathcal{O}(K^2)$ skalare operasjoner ($< 1.5\,\mu\text{s}$ per innkommende punkt ved $K=32$) og bruker **konstant minne $\mathcal{O}(K^2)$ uansett hvor mange millioner målinger som behandles**.
+
+#### C. Sikkerhetsgarantier mot Injeksjoner & DoS
+- **0 Injeksjonssårbarhet**: Ren numerisk parsing med `f64::from_str`. Ingen shell-evaluering, ingen SQL-tolking. Tekst, SQL-kommandoer, `NaN` og `Infinity` forkastes umiddelbart.
+- **Linjebuffer-begrensning (2048 bytes)**: Avviser overdimensjonerte pakker for å forhindre minneuttømming og DoS-angrep.
+- **Localhost-skjerming**: Lytter utelukkende på `127.0.0.1` som standard.
 
 ---
 
@@ -646,6 +730,19 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1
    - **Scrollbar kandidattabell**: Tabellen støtter både horisontal og vertikal rulling, der nøkkelmetrikkene ($R^2$, RMSE og Maks feil) vises foran formelkolonnen slik at nøyaktigheten alltid er umiddelbart synlig.
    - **⚡ Overfør formel til funksjonsanalyse**: Overfører den identifiserte formelen direkte til GPU-analysefanen og synkroniserer automatisk analyseintervallet til datasettets eksakte grenser.
 
+3. **Fane 3: Sanntids Sensor-Service (TCP & Inkrementell Gram)**:
+   - **Start/Stopp-knapp**: Slå TCP-sensortjenesten på og av (`🟢 AKTIV` / `🔴 STOPPET`) med portkonfigurasjon (standard 8765).
+   - **Nøkkeltall-kort (KPI)**: Viser antall målinger behandlet ($N$), forklaringsgrad ($R^2$), feil (RMSE), oppdateringstid per punkt (mikrosekunder $\mu\text{s}$) og aktive klienter.
+   - **Nåværende $f(x)$**: Vises kontinuerlig med kopieringsknapp.
+   - **Interaktivt Testpanel**:
+     - **`➕ Send 1 verdi`**, **`➕ Send 2 verdier`**, **`➕ Send 3 verdier`**: Tester inkrementell utvidelse av modellen.
+     - **`📦 Send Batch (10 verdier)`**: Tester mottak av blokker med sensordata.
+     - **`Manuell (x, y)`**: Sender egendefinert sensorpunkt inn i modellen.
+     - **`🚪 Test QUIT`**: Tester at klientsokkelen lukkes rent med `status: bye`.
+     - **`🔄 Nullstill modell`**: Nullstiller akkumulatorene og tømmer historikken.
+   - **Sanntids graf**: Viser nylig mottatte sensorpunkter som punktsky og den kontinuerlige estimerte kurven $f(x)$.
+   - **Aktivitets- og Sikkerhetslogg**: Viser de siste 100 hendelsene, inkludert innkommende målinger, tilkoblinger, QUIT-kommandoer og avviste ulovlige tegn/injeksjonsforsøk.
+
 ### C. Kommandolinje (CLI):
 ```bash
 # Klassifiser en funksjon og lagre PDF-rapport
@@ -656,6 +753,9 @@ cargo run -- analyze-csv min_data.csv --pdf csv_rapport.pdf
 
 # Analyser en FLAC-lydfil direkte, eksporter til CSV og lagre PDF-rapport
 cargo run -- analyze-flac lyd.flac --export-csv lyd.csv --pdf lyd_rapport.pdf
+
+# Start sanntids sensor-lyttetjeneste i bakgrunnen over TCP (headless daemon)
+cargo run --release -- service --port 8765 --bind 127.0.0.1 --max-k 32
 
 # Kjør alle automatiserte enhetstester (-j 1 anbefales for skånsomt minnebruk)
 cargo test -j 1
