@@ -152,11 +152,11 @@ pub struct ExtremaApp {
     pub poly_log_a: f64,
     pub poly_log_b: f64,
     pub poly_log_degree: usize,
+    pub poly_log_inv_degree: usize,
     pub poly_log_auto_terms: bool,
     pub poly_log_auto_ab: bool,
     pub poly_log_include_ln: bool,
     pub poly_log_include_x_ln: bool,
-    pub poly_log_include_inv_x: bool,
     pub poly_log_result: Option<crate::poly_log_simplifier::PolyLogSimplifierResult>,
     pub poly_log_error: Option<String>,
     pub poly_log_plot_bounds_request: Option<[f64; 4]>,
@@ -253,12 +253,12 @@ impl Default for ExtremaApp {
             poly_log_input: "sin(x) + cos(2x)".to_string(),
             poly_log_a: 0.5,
             poly_log_b: 6.28,
-            poly_log_degree: 2,
+            poly_log_degree: 6,
+            poly_log_inv_degree: 2,
             poly_log_auto_terms: true,
             poly_log_auto_ab: true,
             poly_log_include_ln: true,
             poly_log_include_x_ln: false,
-            poly_log_include_inv_x: false,
             poly_log_result: None,
             poly_log_error: None,
             poly_log_plot_bounds_request: None,
@@ -2587,22 +2587,23 @@ impl ExtremaApp {
 
                     if !self.poly_log_auto_terms {
                         ui.separator();
-                        ui.label(RichText::new("Maks polynomgrad:").strong().color(theme.text_secondary).size(12.0));
-                        ui.add(egui::Slider::new(&mut self.poly_log_degree, 1..=6).text(""))
-                            .on_hover_text("Høyeste x-potens som inkluderes (f.eks. 2 gir ledd inntil x²)");
+                        ui.label(RichText::new("Maks polynomgrad (xᵏ):").strong().color(theme.text_secondary).size(12.0));
+                        ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=50).speed(0.2))
+                            .on_hover_text("Høyeste positive x-potens (f.eks. 14 gir ledd inntil x¹⁴). Kan settes vilkårlig høyt!");
 
                         ui.separator();
+                        ui.label(RichText::new("Maks inversgrad (1/xᵏ):").strong().color(theme.text_secondary).size(12.0));
+                        ui.add(egui::DragValue::new(&mut self.poly_log_inv_degree).range(0..=30).speed(0.2))
+                            .on_hover_text("Høyeste inverse potens 1/x, 1/x², 1/x³... Kan settes vilkårlig høyt! (0 = ingen inverse ledd)");
 
+                        ui.separator();
                         ui.checkbox(&mut self.poly_log_include_ln, RichText::new("log(x)").strong().color(theme.text_accent))
                             .on_hover_text("Inkluder naturlig logaritme ln(x)");
 
                         ui.checkbox(&mut self.poly_log_include_x_ln, "x*log(x)")
                             .on_hover_text("Inkluder produktledd x * ln(x)");
-
-                        ui.checkbox(&mut self.poly_log_include_inv_x, "1/x")
-                            .on_hover_text("Inkluder inversledd 1/x");
                     } else {
-                        ui.label(RichText::new("(Optimal grad 1–6 og basisledd tilpasses automatisk)").italics().color(theme.text_secondary).size(11.5));
+                        ui.label(RichText::new("(Optimal grad opptil x¹⁴, 1/xᵏ og basis tilpasses automatisk mot R² = 1.0)").italics().color(theme.text_secondary).size(11.5));
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2616,10 +2617,10 @@ impl ExtremaApp {
                                     }
                                     let config = crate::poly_log_simplifier::PolyLogBasisConfig {
                                         max_degree: self.poly_log_degree,
+                                        max_inv_degree: self.poly_log_inv_degree,
                                         include_ln: self.poly_log_include_ln,
                                         include_x_ln: self.poly_log_include_x_ln,
-                                        include_inv_x: self.poly_log_include_inv_x,
-                                        num_samples: 600,
+                                        num_samples: 800,
                                         auto_terms: self.poly_log_auto_terms,
                                     };
                                     match crate::poly_log_simplifier::simplify_trig_to_poly_log(&func, self.poly_log_a, self.poly_log_b, &config) {
@@ -2679,8 +2680,13 @@ impl ExtremaApp {
                     .corner_radius(6)
                     .show(&mut cols[0], |ui| {
                         ui.label(RichText::new("TILPASNING (R²)").size(11.0).color(theme.text_secondary));
-                        let r2_col = if res.r_squared >= 0.95 { theme.text_success } else if res.r_squared >= 0.85 { theme.text_warning } else { theme.text_error };
-                        ui.label(RichText::new(format!("{:.5}", res.r_squared)).size(20.0).strong().color(r2_col));
+                        let r2_col = if res.r_squared >= 0.999 { theme.text_success } else if res.r_squared >= 0.90 { theme.text_warning } else { theme.text_error };
+                        let r2_str = if (1.0 - res.r_squared).abs() < 1e-6 {
+                            "1.000000".to_string()
+                        } else {
+                            format!("{:.6}", res.r_squared)
+                        };
+                        ui.label(RichText::new(r2_str).size(20.0).strong().color(r2_col));
                         ui.label(RichText::new("Over [a, b]").size(10.0).color(theme.text_secondary));
                     });
 
@@ -2742,7 +2748,7 @@ impl ExtremaApp {
 
                             for t in &res.terms {
                                 ui.label(RichText::new(&t.name).monospace().strong());
-                                let kind = if t.is_log { "Logaritme" } else if t.power == Some(0) { "Konstant" } else { "Polynom" };
+                                let kind = if t.is_log { "Logaritme" } else if t.power == Some(0) { "Konstant" } else if let Some(p) = t.power { if p < 0 { "Invers polynom" } else { "Polynom" } } else { "Polynom" };
                                 ui.label(kind);
                                 ui.label(RichText::new(format!("{:.6}", t.coeff)).monospace());
                                 let expr = if t.name == "1" { format!("{:.4}", t.coeff) } else { format!("{:.4} * {}", t.coeff, t.name) };

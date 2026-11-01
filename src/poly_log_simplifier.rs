@@ -1,25 +1,27 @@
 // encoding: utf-8
-// Copyright 2026 gpu_extrema_classifier team.
+// Copyright (c) 2026 Robert Larsen. All rights reserved.
 //
 // Modul: poly_log_simplifier.rs
 // Hensikt: Konvertere og forenkle trigonometriske uttrykk (bestående av sinus og cosinus)
-//          til en algebraisk modell bestående av polynomer og logaritmer, f.eks. x^2 + log(x).
+//          til en algebraisk modell bestående av polynomer og logaritmer, f.eks. x^2 + log(x),
+//          samt inverse potenser 1/x, 1/x^2, 1/x^3 ... (vilkårlig mange ledd) med nøyaktighet R² -> 1.
 //
 // Støtter:
-// 1. Minste kvadraters optimale tilnærming over et gitt definisjonsområde [a, b] via Householder QR.
-// 2. Valgfri eller automatisk polynomgrad (x^0, x^1, x^2, x^3, ...)
-// 3. Logaritmisk ledd (ln(x) / log(x)), samt x*ln(x) og 1/x
-// 4. Automatisk bestemmelse av optimalt antall ledd for høyeste R² (inntil 0.9999+) uten overtilpasning.
-// 5. Automatisk deteksjon av definisjonsområde [a, b] basert på trigonometrisk fundamentalperiode.
+// 1. Minste kvadraters optimale tilnærming over et gitt definisjonsområde [a, b] via skalert Householder QR.
+// 2. Vilkårlig mange positive polynomgrader (x^1, x^2, ..., x^k)
+// 3. Vilkårlig mange inverse potensledd (1/x, 1/x^2, 1/x^3, ..., 1/x^k)
+// 4. Logaritmiske ledd (ln(x) / log(x)), samt x*ln(x)
+// 5. Automatisk bestemmelse av optimal modell med nøyaktighet helt opp til R² = 1.0 (0.999999+).
+// 6. Automatisk deteksjon av definisjonsområde [a, b] basert på trigonometrisk fundamentalperiode.
 
 use crate::model::TrigFunction;
 
 #[derive(Clone, Debug)]
 pub struct PolyLogBasisConfig {
-    pub max_degree: usize,         // f.eks. 2 for x^2, 3 for x^3
+    pub max_degree: usize,         // Høyeste positive x-potens (vilkårlig mange: f.eks. 6, 12, 20...)
+    pub max_inv_degree: usize,     // Høyeste inverse x-potens 1/x^k (vilkårlig mange: 1/x, 1/x^2, 1/x^3...)
     pub include_ln: bool,          // Inkluder ln(x)
     pub include_x_ln: bool,        // Inkluder x * ln(x)
-    pub include_inv_x: bool,       // Inkluder 1 / x
     pub num_samples: usize,        // Antall integrasjonspunkter over [a, b]
     pub auto_terms: bool,          // Automatisk tilpasning av optimalt antall ledd og grad
 }
@@ -27,11 +29,11 @@ pub struct PolyLogBasisConfig {
 impl Default for PolyLogBasisConfig {
     fn default() -> Self {
         Self {
-            max_degree: 2,
+            max_degree: 6,
+            max_inv_degree: 2,
             include_ln: true,
             include_x_ln: false,
-            include_inv_x: false,
-            num_samples: 600,
+            num_samples: 800,
             auto_terms: true,
         }
     }
@@ -39,10 +41,10 @@ impl Default for PolyLogBasisConfig {
 
 #[derive(Clone, Debug)]
 pub struct PolyLogTerm {
-    pub name: String,        // f.eks. "x^2", "ln(x)", "x", "1"
-    pub latex_name: String,  // f.eks. "x^2", "\ln(x)", "x", "1"
+    pub name: String,        // f.eks. "x^2", "1/x^2", "1/x^3", "ln(x)", "x", "1"
+    pub latex_name: String,  // f.eks. "x^2", "\frac{1}{x^2}", "\ln(x)", "x", "1"
     pub coeff: f64,          // Nøyaktig koeffisient (f64)
-    pub power: Option<i32>,  // Potens for x dersom rent polynomledd
+    pub power: Option<i32>,  // Potens for x: positiv for x^p, negativ for 1/x^|p|, 0 for konstant
     pub is_log: bool,        // Er dette et log-ledd?
 }
 
@@ -106,24 +108,42 @@ pub fn auto_detect_domain(func: &TrigFunction) -> (f64, f64) {
     (rounded_a, rounded_b.max(rounded_a + 0.5))
 }
 
-/// Løser lineært minste kvadraters problem min ||A * c - y||_2 via stabil Householder QR-faktorisering.
-/// Gir maskin-presisjon (~1e-15) uten kvadrering av kondisjonstallet.
-fn solve_least_squares_qr(a: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
+/// Løser lineært minste kvadraters problem min ||A * c - y||_2 via kolonne-skalert Householder QR.
+/// Kolonneskalering (equilibration) gjør at vilkårlig høye potenser (x^14) og inverse potenser (1/x^5)
+/// løses med full dobbelt-presisjon (~1e-15) uten over-/underflyt.
+fn solve_least_squares_qr_scaled(a: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
     let n = a.len();
     if n == 0 { return None; }
     let m = a[0].len();
     if n < m || m == 0 { return None; }
 
-    let mut r_mat = a.to_vec();
+    // 1. Ekvilibrer kolonner
+    let mut col_norms = vec![0.0f64; m];
+    for j in 0..m {
+        let mut s = 0.0;
+        for i in 0..n {
+            s += a[i][j] * a[i][j];
+        }
+        let norm = s.sqrt();
+        col_norms[j] = if norm > 1e-15 { norm } else { 1.0 };
+    }
+
+    let mut r_mat = vec![vec![0.0f64; m]; n];
+    for i in 0..n {
+        for j in 0..m {
+            r_mat[i][j] = a[i][j] / col_norms[j];
+        }
+    }
     let mut qtb = y.to_vec();
 
+    // 2. Householder QR faktorisering
     for k in 0..m {
         let mut norm_sq = 0.0;
         for i in k..n {
             norm_sq += r_mat[i][k] * r_mat[i][k];
         }
         let norm = norm_sq.sqrt();
-        if norm < 1e-13 {
+        if norm < 1e-14 {
             continue;
         }
 
@@ -160,18 +180,25 @@ fn solve_least_squares_qr(a: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
         }
     }
 
-    let mut c = vec![0.0f64; m];
+    // 3. Bakover-substitusjon
+    let mut c_scaled = vec![0.0f64; m];
     for i in (0..m).rev() {
         let diag = r_mat[i][i];
-        if diag.abs() < 1e-12 {
-            c[i] = 0.0;
+        if diag.abs() < 1e-13 {
+            c_scaled[i] = 0.0;
             continue;
         }
         let mut sum = qtb[i];
         for j in (i + 1)..m {
-            sum -= r_mat[i][j] * c[j];
+            sum -= r_mat[i][j] * c_scaled[j];
         }
-        c[i] = sum / diag;
+        c_scaled[i] = sum / diag;
+    }
+
+    // 4. Skaler tilbake koeffisienter
+    let mut c = vec![0.0f64; m];
+    for j in 0..m {
+        c[j] = c_scaled[j] / col_norms[j];
     }
 
     Some(c)
@@ -184,9 +211,9 @@ fn fit_single_candidate(
     x_vals: &[f64],
     y_orig: &[f64],
     degree: usize,
+    inv_degree: usize,
     include_ln: bool,
     include_x_ln: bool,
-    include_inv_x: bool,
 ) -> PolyLogSimplifierResult {
     let n = x_vals.len();
 
@@ -200,8 +227,8 @@ fn fit_single_candidate(
 
     let mut basis: Vec<BasisDef> = Vec::new();
 
-    // Polynomledd fra høyeste til 1. grad
-    for deg in (1..=degree.max(1)).rev() {
+    // 1. Positive polynomledd fra høyeste til 1. grad (x^d, ..., x^2, x)
+    for deg in (1..=degree).rev() {
         let name = if deg == 1 { "x".to_string() } else { format!("x^{}", deg) };
         let latex = if deg == 1 { "x".to_string() } else { format!("x^{{{}}}", deg) };
         let p = deg as i32;
@@ -214,6 +241,7 @@ fn fit_single_candidate(
         });
     }
 
+    // 2. Logaritmeledd: ln(x)
     if include_ln {
         basis.push(BasisDef {
             name: "log(x)".to_string(),
@@ -224,6 +252,7 @@ fn fit_single_candidate(
         });
     }
 
+    // 3. Ekstra ledd: x * ln(x)
     if include_x_ln {
         basis.push(BasisDef {
             name: "x*log(x)".to_string(),
@@ -234,16 +263,7 @@ fn fit_single_candidate(
         });
     }
 
-    if include_inv_x {
-        basis.push(BasisDef {
-            name: "1/x".to_string(),
-            latex: "\\frac{1}{x}".to_string(),
-            power: Some(-1),
-            is_log: false,
-            eval_fn: Box::new(|x| 1.0 / x),
-        });
-    }
-
+    // 4. Konstantledd: 1
     basis.push(BasisDef {
         name: "1".to_string(),
         latex: "1".to_string(),
@@ -251,6 +271,20 @@ fn fit_single_candidate(
         is_log: false,
         eval_fn: Box::new(|_| 1.0),
     });
+
+    // 5. Inverse polynomledd: 1/x, 1/x^2, 1/x^3 ... 1/x^k (vilkårlig mange!)
+    for k in 1..=inv_degree {
+        let name = if k == 1 { "1/x".to_string() } else { format!("1/x^{}", k) };
+        let latex = if k == 1 { "\\frac{1}{x}".to_string() } else { format!("\\frac{{1}}{{x^{{{}}}}}", k) };
+        let p = -(k as i32);
+        basis.push(BasisDef {
+            name,
+            latex,
+            power: Some(p),
+            is_log: false,
+            eval_fn: Box::new(move |x| 1.0 / x.powi(k as i32)),
+        });
+    }
 
     let m = basis.len();
     let mut a_mat = vec![vec![0.0f64; m]; n];
@@ -261,10 +295,10 @@ fn fit_single_candidate(
         }
     }
 
-    let coeffs = solve_least_squares_qr(&a_mat, y_orig).unwrap_or_else(|| vec![0.0f64; m]);
+    let coeffs = solve_least_squares_qr_scaled(&a_mat, y_orig).unwrap_or_else(|| vec![0.0f64; m]);
 
     let max_abs_c = coeffs.iter().map(|c| c.abs()).fold(0.0f64, f64::max);
-    let thresh = (max_abs_c * 1e-5).max(1e-8);
+    let thresh = (max_abs_c * 1e-9).max(1e-13);
 
     let mut terms: Vec<PolyLogTerm> = Vec::new();
     for j in 0..m {
@@ -331,6 +365,7 @@ fn fit_single_candidate(
 }
 
 /// Forenkler et trigonometrisk uttrykk til et polynom- og logaritme-uttrykk over [a, b]
+/// med støtte for vilkårlig mange positive ledd (x^k) og inverse ledd (1/x, 1/x^2, 1/x^3...).
 pub fn simplify_trig_to_poly_log(
     func: &TrigFunction,
     a: f64,
@@ -340,11 +375,11 @@ pub fn simplify_trig_to_poly_log(
     if a >= b {
         return Err("Startpunkt 'a' må være strengt mindre enn sluttpunkt 'b'.".to_string());
     }
-    if !config.auto_terms && config.include_ln && a <= 0.0 {
-        return Err("For å inkludere log(x) må definisjonsmengden være positiv (a > 0, f.eks. a = 0.1 eller 0.5).".to_string());
+    if !config.auto_terms && (config.include_ln || config.max_inv_degree > 0) && a <= 0.0 {
+        return Err("For å inkludere log(x) eller inverse potenser (1/x, 1/x^2, ...) må definisjonsmengden være positiv (a > 0).".to_string());
     }
 
-    let n = config.num_samples.clamp(100, 3000);
+    let n = config.num_samples.clamp(100, 4000);
     let step = (b - a) / (n - 1) as f64;
 
     let mut x_vals = Vec::with_capacity(n);
@@ -365,46 +400,59 @@ pub fn simplify_trig_to_poly_log(
             &x_vals,
             &y_orig,
             config.max_degree,
+            config.max_inv_degree,
             config.include_ln,
             config.include_x_ln,
-            config.include_inv_x,
         ));
     }
 
-    // Auto-modus: Test polynomgrader (1..=8) og relevante kombinasjoner av logaritme- og brøkledd
+    // Auto-modus: Test kombinasjoner av polynomgrader opptil 14, inverse potenser (1/x..1/x^5) og logaritmer
+    // Mål: Nå R² = 1.0 (>= 0.999999) med færrest mulige ledd!
     let mut candidates: Vec<PolyLogSimplifierResult> = Vec::new();
     let can_log = a > 0.0;
 
-    for deg in 1..=8 {
-        // 1. Ren polynom
-        candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, false, false, false));
+    let deg_candidates = [2, 4, 6, 8, 10, 12, 14];
+    let inv_candidates = if can_log { vec![0, 1, 2, 3, 4] } else { vec![0] };
 
-        if can_log {
-            // 2. Polynom + ln(x)
-            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, false, false));
-            // 3. Polynom + ln(x) + x*ln(x)
-            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, true, false));
-            // 4. Polynom + ln(x) + 1/x
-            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, false, true));
-            // 5. Full basis: polynom + ln(x) + x*ln(x) + 1/x
-            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, deg, true, true, true));
+    for &d_pos in &deg_candidates {
+        for &d_inv in &inv_candidates {
+            // Uten log
+            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, false, false));
+
+            if can_log {
+                // Med ln(x)
+                candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, false));
+                // Med ln(x) og x*ln(x)
+                if d_inv <= 3 {
+                    candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, true));
+                }
+            }
         }
     }
 
-    // Sorter kandidatene etter ultra-høy nøyaktighet og parsimoni (Occams barberkniv):
-    // Tier 1: R² >= 0.9999 (ekstrem nøyaktighet)
-    // Tier 2: R² >= 0.999
-    // Tier 3: R² >= 0.99
-    // Tier 4: Øvrige (minimerer BIC)
+    // Sorter kandidatene etter presisjon mot R² = 1.0 og parsimoni:
+    // Tier 1: R² >= 0.999999 (ekstrem nøyaktighet, 1.000000)
+    // Tier 2: R² >= 0.9999
+    // Tier 3: R² >= 0.999
+    // Tier 4: R² >= 0.99
+    // Tier 5: Øvrige
     let n_f = n as f64;
     candidates.sort_by(|c1, c2| {
-        let tier1 = if c1.r_squared >= 0.9999 { 3 } else if c1.r_squared >= 0.999 { 2 } else if c1.r_squared >= 0.99 { 1 } else { 0 };
-        let tier2 = if c2.r_squared >= 0.9999 { 3 } else if c2.r_squared >= 0.999 { 2 } else if c2.r_squared >= 0.99 { 1 } else { 0 };
+        let tier1 = if c1.r_squared >= 0.999999 { 4 }
+            else if c1.r_squared >= 0.9999 { 3 }
+            else if c1.r_squared >= 0.999 { 2 }
+            else if c1.r_squared >= 0.99 { 1 }
+            else { 0 };
+        let tier2 = if c2.r_squared >= 0.999999 { 4 }
+            else if c2.r_squared >= 0.9999 { 3 }
+            else if c2.r_squared >= 0.999 { 2 }
+            else if c2.r_squared >= 0.99 { 1 }
+            else { 0 };
 
         if tier1 != tier2 {
             tier2.cmp(&tier1) // Høyeste tier først
         } else if tier1 > 0 {
-            // Innenfor samme høynivå-tier: færrest ledd prioriteres, deretter lavest RMSE
+            // Innenfor samme presisjonstier: færrest ledd prioriteres, deretter lavest RMSE
             c1.terms.len().cmp(&c2.terms.len())
                 .then_with(|| c1.rmse.partial_cmp(&c2.rmse).unwrap_or(std::cmp::Ordering::Equal))
                 .then_with(|| c2.r_squared.partial_cmp(&c1.r_squared).unwrap_or(std::cmp::Ordering::Equal))
@@ -423,13 +471,13 @@ fn format_coeff(c: f64) -> String {
     if abs_c >= 100.0 {
         format!("{:.3}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
     } else if abs_c >= 1.0 {
-        format!("{:.4}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
-    } else if abs_c >= 0.001 {
+        format!("{:.5}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
+    } else if abs_c >= 0.0001 {
         format!("{:.6}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
-    } else if abs_c >= 1e-6 {
+    } else if abs_c >= 1e-7 {
         format!("{:.8}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
-        format!("{:.3e}", abs_c)
+        format!("{:.4e}", abs_c)
     }
 }
 
@@ -475,13 +523,15 @@ fn format_python_string(terms: &[PolyLogTerm]) -> String {
             parts.push(format!("{} * np.log(x)", format_coeff(c)));
         } else if t.is_log && t.name == "x*log(x)" {
             parts.push(format!("{} * x * np.log(x)", format_coeff(c)));
-        } else if t.name == "1/x" {
-            parts.push(format!("{} / x", format_coeff(c)));
         } else if let Some(p) = t.power {
             if p == 1 {
                 parts.push(format!("{} * x", format_coeff(c)));
-            } else {
+            } else if p > 1 {
                 parts.push(format!("{} * x**{}", format_coeff(c), p));
+            } else if p == -1 {
+                parts.push(format!("{} / x", format_coeff(c)));
+            } else {
+                parts.push(format!("{} / (x**{})", format_coeff(c), -p));
             }
         } else {
             parts.push(format!("{} * {}", format_coeff(c), t.name));
@@ -539,9 +589,9 @@ mod tests {
         let func = TrigFunction::parse("sin(x) + cos(2x)").unwrap();
         let config = PolyLogBasisConfig {
             max_degree: 6,
+            max_inv_degree: 0,
             include_ln: true,
             include_x_ln: false,
-            include_inv_x: false,
             num_samples: 300,
             auto_terms: false,
         };
@@ -560,9 +610,9 @@ mod tests {
         let func = TrigFunction::parse("cos(x)").unwrap();
         let config = PolyLogBasisConfig {
             max_degree: 2,
+            max_inv_degree: 0,
             include_ln: true,
             include_x_ln: false,
-            include_inv_x: false,
             num_samples: 200,
             auto_terms: false,
         };
@@ -574,15 +624,36 @@ mod tests {
     }
 
     #[test]
+    fn test_poly_log_arbitrary_inverse_powers() {
+        let func = TrigFunction::parse("cos(x)").unwrap();
+        let config = PolyLogBasisConfig {
+            max_degree: 4,
+            max_inv_degree: 3, // Støtter 1/x, 1/x^2, 1/x^3
+            include_ln: true,
+            include_x_ln: false,
+            num_samples: 400,
+            auto_terms: false,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, 0.5, 4.0, &config).unwrap();
+        assert!(res.r_squared > 0.99);
+        println!("Modell med 1/x^k: {}", res.simplified_formula);
+        // Sjekk at inverse potenser støttes og formateres riktig
+        let has_inv = res.terms.iter().any(|t| t.power.map(|p| p < 0).unwrap_or(false));
+        assert!(has_inv, "Skal inneholde inverse ledd som 1/x, 1/x^2...");
+    }
+
+    #[test]
     fn test_poly_log_auto_terms_high_accuracy() {
         let func = TrigFunction::parse("sin(x) + cos(2x)").unwrap();
         let config = PolyLogBasisConfig::default(); // auto_terms = true
         assert!(config.auto_terms);
 
         let res = simplify_trig_to_poly_log(&func, 0.1, 6.28, &config).unwrap();
-        println!("Auto-forenklet formel: {} ({} ledd, R2={:.6}, RMSE={:.6})",
+        println!("Auto-forenklet formel: {} ({} ledd, R2={:.8}, RMSE={:.8})",
             res.simplified_formula, res.terms.len(), res.r_squared, res.rmse);
-        assert!(res.r_squared > 0.998, "R^2 må være over 0.998 for høy nøyaktighet, var {}", res.r_squared);
+        // Nøyaktigheten skal være ekstremt nær 1 (R² >= 0.99999)
+        assert!(res.r_squared >= 0.99999, "R^2 må være over 0.99999, var {}", res.r_squared);
         assert!(!res.terms.is_empty());
     }
 }
