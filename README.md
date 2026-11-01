@@ -699,12 +699,6 @@ Eller via PowerShell:
 powershell -ExecutionPolicy Bypass -File .\run.ps1
 ```
 
-For å vise fullstendige interaktive arkitektur- og systemdiagrammer i nettleser og terminal:
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run.ps1 -Diagram
-```
-*(eller åpne [`diagrams.html`](diagrams.html) direkte i nettleseren)*
-
 ### B. Funksjonalitet i Brukergrensesnittet:
 1. **Fane 1: Funksjonsanalyse & Graf**:
    - Skriv inn formel i `f(x) = `, f.eks. `[[4, 3*cos(x), 100]] + 5*sin(x)` eller `2*sin(x) + 3*cos(2x)`.

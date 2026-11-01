@@ -6,7 +6,6 @@
 
 # Generated reports & documents
 *.html
-!diagrams.html
 *.pdf
 
 # Temporary scratch CSV datasets from ad-hoc GUI runs
