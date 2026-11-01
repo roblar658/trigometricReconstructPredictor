@@ -12,12 +12,15 @@ use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::Ordering;
+use crate::realtime_service::RealtimeServiceController;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveTab {
     Classifier,
     CsvAnalysis,
+    RealtimeService,
     Help,
 }
 
@@ -126,6 +129,17 @@ pub struct ExtremaApp {
     pub gen_formula: String,
     pub gen_points: usize,
     pub gen_noise: f64,
+
+    // Fane 3: Sanntids Sensor-Service
+    pub service_controller: RealtimeServiceController,
+    pub service_port: u16,
+    pub service_max_k: usize,
+    pub service_max_terms: usize,
+    pub service_test_x: f64,
+    pub service_test_y: f64,
+    pub service_test_step: f64,
+    pub service_status_msg: Option<String>,
+    pub service_error_msg: Option<String>,
 }
 
 impl Default for ExtremaApp {
@@ -198,6 +212,16 @@ impl Default for ExtremaApp {
             gen_formula: "sin(x) + cos(2x)".to_string(),
             gen_points: 2000,
             gen_noise: 0.0,
+
+            service_controller: RealtimeServiceController::new(8765, 32),
+            service_port: 8765,
+            service_max_k: 32,
+            service_max_terms: 4,
+            service_test_x: 0.0,
+            service_test_y: 0.0,
+            service_test_step: 0.1,
+            service_status_msg: None,
+            service_error_msg: None,
         };
 
         app.run_gpu_analysis();
@@ -808,6 +832,14 @@ impl eframe::App for ExtremaApp {
                 self.tab = ActiveTab::CsvAnalysis;
             }
 
+            let tab_service = ui.selectable_label(
+                self.tab == ActiveTab::RealtimeService,
+                RichText::new("⚡ Sanntids Sensor-Service").strong().size(12.5),
+            );
+            if tab_service.clicked() {
+                self.tab = ActiveTab::RealtimeService;
+            }
+
             let tab_help = ui.selectable_label(
                 self.tab == ActiveTab::Help,
                 RichText::new("❓ Hjelp").strong().size(12.5),
@@ -847,6 +879,11 @@ impl eframe::App for ExtremaApp {
         match self.tab {
             ActiveTab::Classifier => self.render_classifier_tab(ui, &theme),
             ActiveTab::CsvAnalysis => self.render_csv_tab(ui, &theme),
+            ActiveTab::RealtimeService => {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.render_service_tab(ui, &theme);
+                });
+            }
             ActiveTab::Help => {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     self.render_help_tab(ui, &theme);
@@ -1657,6 +1694,516 @@ impl ExtremaApp {
             self.tab = ActiveTab::Classifier;
             self.run_gpu_analysis();
         }
+    }
+
+
+    fn render_service_tab(&mut self, ui: &mut egui::Ui, theme: &ThemeColors) {
+        let is_running = self.service_controller.is_running.load(Ordering::SeqCst);
+        let active_clients = self.service_controller.active_clients.load(Ordering::SeqCst);
+
+        // --- 1. TOPPKONTROLLER: START / STOPP, PORT, PARAMETERE ---
+        egui::Frame::new()
+            .fill(theme.bg_card)
+            .stroke(if is_running { theme.border_accent } else { theme.border_stroke })
+            .inner_margin(10)
+            .corner_radius(6)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if is_running {
+                        ui.label(
+                            RichText::new("🟢 TJENESTE AKTIV")
+                                .color(theme.text_success)
+                                .strong()
+                                .size(13.5),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "(Lytter på {}:{})",
+                                self.service_controller.bind_host, self.service_controller.port
+                            ))
+                            .color(theme.text_accent)
+                            .monospace()
+                            .strong()
+                            .size(12.5),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("🔴 TJENESTE STOPPET")
+                                .color(theme.text_error)
+                                .strong()
+                                .size(13.5),
+                        );
+                        ui.label(
+                            RichText::new("(Klar til å starte TCP-lytter)")
+                                .color(theme.text_secondary)
+                                .size(12.0),
+                        );
+                    }
+
+                    ui.separator();
+
+                    if is_running {
+                        let btn = ui.add(
+                            egui::Button::new(
+                                RichText::new("⏹ Stopp Tjeneste")
+                                    .color(Color32::WHITE)
+                                    .strong()
+                                    .size(12.5),
+                            )
+                            .fill(Color32::from_rgb(185, 28, 28)),
+                        );
+                        if btn.clicked() {
+                            self.service_controller.stop();
+                            self.service_status_msg = Some("Tjeneste stoppet.".to_string());
+                        }
+                    } else {
+                        let btn = ui.add(
+                            egui::Button::new(
+                                RichText::new("▶ Start Tjeneste")
+                                    .color(Color32::WHITE)
+                                    .strong()
+                                    .size(12.5),
+                            )
+                            .fill(Color32::from_rgb(22, 163, 74)),
+                        );
+                        if btn.clicked() {
+                            self.service_controller.port = self.service_port;
+                            match self.service_controller.start() {
+                                Ok(_) => {
+                                    self.service_status_msg = Some(format!(
+                                        "Tjeneste startet og lytter på 127.0.0.1:{}",
+                                        self.service_port
+                                    ));
+                                    self.service_error_msg = None;
+                                }
+                                Err(e) => {
+                                    self.service_error_msg = Some(e);
+                                }
+                            }
+                        }
+                    }
+
+                    ui.separator();
+
+                    ui.label(RichText::new("Port:").color(theme.text_secondary).size(12.0));
+                    if is_running {
+                        ui.label(
+                            RichText::new(format!("{}", self.service_port))
+                                .monospace()
+                                .color(theme.text_primary)
+                                .strong(),
+                        );
+                    } else {
+                        ui.add(
+                            egui::DragValue::new(&mut self.service_port)
+                                .range(1024..=65535)
+                                .speed(1.0),
+                        )
+                        .on_hover_text("TCP-port som sensortjenesten lytter på");
+                    }
+
+                    ui.separator();
+
+                    ui.label(RichText::new("Maks k:").color(theme.text_secondary).size(12.0));
+                    let k_resp = ui.add(
+                        egui::Slider::new(&mut self.service_max_k, 4..=128)
+                            .text(""),
+                    )
+                    .on_hover_text("Maksimal Fourier-frekvens i online Gram-matrisen");
+                    if k_resp.changed() {
+                        self.service_controller.reinit_fitter(self.service_max_k);
+                    }
+
+                    ui.label(RichText::new("Maks ledd:").color(theme.text_secondary).size(12.0));
+                    let terms_resp = ui.add(
+                        egui::Slider::new(&mut self.service_max_terms, 1..=16)
+                            .text(""),
+                    )
+                    .on_hover_text("Maksimalt antall signifikante trigonometriske ledd i f(x)");
+                    if terms_resp.changed() {
+                        if let Ok(mut st) = self.service_controller.state.write() {
+                            st.max_terms = self.service_max_terms;
+                        }
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(
+                                RichText::new("🔄 Nullstill modell")
+                                    .color(theme.text_warning)
+                                    .size(12.0),
+                            )
+                            .on_hover_text("Nullstiller alle akkumulatorer og sletter historikk")
+                            .clicked()
+                        {
+                            self.service_controller.reinit_fitter(self.service_max_k);
+                            self.service_test_x = 0.0;
+                            self.service_status_msg = Some("Modell og data tilbakestilt.".to_string());
+                        }
+                    });
+                });
+            });
+
+        ui.add_space(5.0);
+
+        // Snapshot av tilstand
+        let (status, recent_points, log_messages) = {
+            let st = self.service_controller.state.read().unwrap();
+            (
+                st.latest_status.clone(),
+                st.fitter.recent_points.iter().copied().collect::<Vec<_>>(),
+                st.log_messages.iter().cloned().collect::<Vec<_>>(),
+            )
+        };
+
+        // --- 2. NØKKELTALL (KPI GRID) ---
+        ui.columns(5, |cols| {
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(&mut cols[0], |ui| {
+                    ui.label(RichText::new("ANTALL MÅLINGER (N)").size(11.0).color(theme.text_secondary));
+                    ui.label(
+                        RichText::new(format!("{}", status.count))
+                            .size(22.0)
+                            .color(theme.text_accent)
+                            .strong(),
+                    );
+                    ui.label(RichText::new("Inkrementelt O(1)").size(10.0).color(theme.text_secondary));
+                });
+
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(&mut cols[1], |ui| {
+                    ui.label(RichText::new("TILPASNINGSGRAD (R²)").size(11.0).color(theme.text_secondary));
+                    let r2_color = if status.r_squared >= 0.999 {
+                        theme.text_success
+                    } else if status.r_squared >= 0.95 {
+                        theme.text_warning
+                    } else {
+                        theme.text_error
+                    };
+                    ui.label(
+                        RichText::new(format!("{:.5}", status.r_squared))
+                            .size(22.0)
+                            .color(r2_color)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(format!("RMSE: {:.5}", status.rmse))
+                            .size(10.0)
+                            .color(theme.text_secondary),
+                    );
+                });
+
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(&mut cols[2], |ui| {
+                    ui.label(RichText::new("OPPDATERINGSTID").size(11.0).color(theme.text_secondary));
+                    ui.label(
+                        RichText::new(format!("{} µs", status.last_update_us))
+                            .size(22.0)
+                            .color(theme.text_success)
+                            .strong(),
+                    );
+                    ui.label(RichText::new("Per innkommende verdi").size(10.0).color(theme.text_secondary));
+                });
+
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(&mut cols[3], |ui| {
+                    ui.label(RichText::new("AKTIVE KLIENTER").size(11.0).color(theme.text_secondary));
+                    let client_color = if active_clients > 0 {
+                        theme.text_success
+                    } else {
+                        theme.text_secondary
+                    };
+                    ui.label(
+                        RichText::new(format!("{}", active_clients))
+                            .size(22.0)
+                            .color(client_color)
+                            .strong(),
+                    );
+                    ui.label(RichText::new("Tilkoblede sensorer").size(10.0).color(theme.text_secondary));
+                });
+
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(&mut cols[4], |ui| {
+                    ui.label(RichText::new("INJEKSJONSVERN").size(11.0).color(theme.text_secondary));
+                    ui.label(
+                        RichText::new("AKTIVT")
+                            .size(22.0)
+                            .color(theme.text_success)
+                            .strong(),
+                    );
+                    ui.label(RichText::new("Strict IEEE754 & Bounded").size(10.0).color(theme.text_secondary));
+                });
+        });
+
+        ui.add_space(5.0);
+
+        // --- 3. FORMELBANNER FOR f(x) ---
+        egui::Frame::new()
+            .fill(theme.bg_card)
+            .stroke(theme.border_accent)
+            .inner_margin(8)
+            .corner_radius(6)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Nåværende f(x):").strong().color(theme.text_accent).size(13.5));
+                    ui.label(
+                        RichText::new(&status.formula)
+                            .monospace()
+                            .strong()
+                            .color(theme.text_primary)
+                            .size(14.5),
+                    );
+                    if ui.button(RichText::new("📋 Kopier").size(11.5)).clicked() {
+                        ui.ctx().copy_text(status.formula.clone());
+                    }
+                });
+            });
+
+        ui.add_space(5.0);
+
+        // --- 4. INTERAKTIV TEST & SIMULERINGSPANEL ---
+        egui::Frame::new()
+            .fill(theme.bg_card)
+            .stroke(theme.border_stroke)
+            .inner_margin(8)
+            .corner_radius(6)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("🧪 Test sensorverdier:").strong().color(theme.text_accent).size(12.5));
+
+                    if ui
+                        .button(RichText::new("➕ Send 1 verdi").strong().color(theme.text_primary).size(12.0))
+                        .on_hover_text("Sender 1 nytt sensorpunkt inn i online Gram-matrisen")
+                        .clicked()
+                    {
+                        let x = self.service_test_x;
+                        let y = x.sin() + 0.5 * (2.0 * x).cos();
+                        self.service_test_x += self.service_test_step;
+                        let st = self.service_controller.push_point(x, y);
+                        self.service_status_msg = Some(format!(
+                            "Mottok 1 verdi: ({:.2}, {:.2}). Nå N={}, f(x)={}",
+                            x, y, st.count, st.formula
+                        ));
+                    }
+
+                    if ui
+                        .button(RichText::new("➕ Send 2 verdier").strong().color(theme.text_primary).size(12.0))
+                        .on_hover_text("Sender 2 påfølgende sensorpunkter")
+                        .clicked()
+                    {
+                        let mut pts = Vec::with_capacity(2);
+                        for _ in 0..2 {
+                            let x = self.service_test_x;
+                            let y = x.sin() + 0.5 * (2.0 * x).cos();
+                            self.service_test_x += self.service_test_step;
+                            pts.push((x, y));
+                        }
+                        let st = self.service_controller.push_batch(&pts);
+                        self.service_status_msg = Some(format!(
+                            "Mottok 2 verdier. Nå N={}, f(x)={}",
+                            st.count, st.formula
+                        ));
+                    }
+
+                    if ui
+                        .button(RichText::new("➕ Send 3 verdier").strong().color(theme.text_primary).size(12.0))
+                        .on_hover_text("Sender 3 påfølgende sensorpunkter")
+                        .clicked()
+                    {
+                        let mut pts = Vec::with_capacity(3);
+                        for _ in 0..3 {
+                            let x = self.service_test_x;
+                            let y = x.sin() + 0.5 * (2.0 * x).cos();
+                            self.service_test_x += self.service_test_step;
+                            pts.push((x, y));
+                        }
+                        let st = self.service_controller.push_batch(&pts);
+                        self.service_status_msg = Some(format!(
+                            "Mottok 3 verdier. Nå N={}, f(x)={}",
+                            st.count, st.formula
+                        ));
+                    }
+
+                    if ui
+                        .button(RichText::new("📦 Send Batch (10 verdier)").color(theme.text_primary).size(12.0))
+                        .on_hover_text("Sender en batch på 10 punkter på en gang")
+                        .clicked()
+                    {
+                        let mut pts = Vec::with_capacity(10);
+                        for _ in 0..10 {
+                            let x = self.service_test_x;
+                            let y = x.sin() + 0.5 * (2.0 * x).cos();
+                            self.service_test_x += self.service_test_step;
+                            pts.push((x, y));
+                        }
+                        let st = self.service_controller.push_batch(&pts);
+                        self.service_status_msg = Some(format!(
+                            "Mottok batch på 10 punkter. Nå N={}, f(x)={}",
+                            st.count, st.formula
+                        ));
+                    }
+
+                    ui.separator();
+
+                    ui.label(RichText::new("x:").size(11.5).color(theme.text_secondary));
+                    ui.add(egui::DragValue::new(&mut self.service_test_x).speed(0.05));
+                    ui.label(RichText::new("y:").size(11.5).color(theme.text_secondary));
+                    ui.add(egui::DragValue::new(&mut self.service_test_y).speed(0.05));
+                    if ui.button("Send (x,y)").clicked() {
+                        let st = self.service_controller.push_point(self.service_test_x, self.service_test_y);
+                        self.service_status_msg = Some(format!(
+                            "Mottok ({:.3}, {:.3}). Nå N={}, f(x)={}",
+                            self.service_test_x, self.service_test_y, st.count, st.formula
+                        ));
+                    }
+
+                    ui.separator();
+
+                    if ui
+                        .button(RichText::new("🚪 Test QUIT").color(theme.text_error).size(12.0))
+                        .on_hover_text("Simulerer at en sensorklient sender QUIT for å avslutte forbindelsen rent")
+                        .clicked()
+                    {
+                        if let Ok(mut st_lock) = self.service_controller.state.write() {
+                            st_lock.log("🚪 Klient sendte QUIT -> sokkel lukket rent med status: bye".to_string());
+                        }
+                        self.service_status_msg = Some("Testet QUIT: Sokkelforbindelsen avsluttes rent.".to_string());
+                    }
+                });
+
+                if let Some(msg) = &self.service_status_msg {
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(msg).color(theme.text_accent).size(11.5));
+                }
+                if let Some(err) = &self.service_error_msg {
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(format!("❌ {}", err)).color(theme.text_error).size(11.5));
+                }
+            });
+
+        ui.add_space(5.0);
+
+        // --- 5. SANNTIDS PLOT (SENSORDATA & ESTIMERT f(x)) ---
+        let plot_height = 230.0;
+        let plot = Plot::new("realtime_service_plot")
+            .height(plot_height)
+            .show_grid(true)
+            .allow_drag(true)
+            .allow_zoom(true)
+            .allow_scroll(true)
+            .x_axis_label("x (sensor-tid / fase)")
+            .y_axis_label("y (sensorverdi)");
+
+        plot.show(ui, |plot_ui| {
+            if !recent_points.is_empty() {
+                let pts: Vec<[f64; 2]> = recent_points.iter().map(|&(x, y)| [x, y]).collect();
+                plot_ui.points(
+                    Points::new("Mottatte sensorpunkter", pts)
+                        .color(theme.peak_color)
+                        .radius(3.5)
+                        .shape(MarkerShape::Circle),
+                );
+            }
+
+            if let Some(func) = &status.current_func {
+                if !recent_points.is_empty() {
+                    let min_x = recent_points.first().map(|p| p.0).unwrap_or(0.0).min(0.0);
+                    let max_x = recent_points.last().map(|p| p.0).unwrap_or(TAU).max(TAU);
+                    let span = (max_x - min_x).max(1.0);
+                    let num_samples = 300;
+                    let step = span / num_samples as f64;
+                    let mut curve_pts = Vec::with_capacity(num_samples + 1);
+                    for i in 0..=num_samples {
+                        let x = min_x + i as f64 * step;
+                        let y = func.eval(x);
+                        curve_pts.push([x, y]);
+                    }
+
+                    plot_ui.line(
+                        Line::new("Online f(x) kurve", curve_pts)
+                            .color(theme.text_accent)
+                            .width(2.5),
+                    );
+                }
+            }
+        });
+
+        ui.add_space(5.0);
+
+        // --- 6. TO-KOLONNE BUNNOMRÅDE: LOGG & PROTOKOLLGUIDE ---
+        ui.columns(2, |cols| {
+            // Kolonne 1: Aktivitets- og Sikkerhetslogg
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(&mut cols[0], |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("📋 Aktivitets- og Sikkerhetslogg").strong().color(theme.text_primary).size(12.5));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button(RichText::new("Tøm").size(11.0)).clicked() {
+                                if let Ok(mut st) = self.service_controller.state.write() {
+                                    st.log_messages.clear();
+                                }
+                            }
+                        });
+                    });
+
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("realtime_service_log_scroll")
+                        .max_height(140.0)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            if log_messages.is_empty() {
+                                ui.label(RichText::new("(Ingen hendelser ennå. Start tjenesten eller send testverdier.)").color(theme.text_secondary).size(11.0));
+                            } else {
+                                for line in log_messages.iter().rev() {
+                                    ui.label(RichText::new(line).monospace().size(11.0).color(theme.text_secondary));
+                                }
+                            }
+                        });
+                });
+
+            // Kolonne 2: Sikkerhet & Sensor-API
+            egui::Frame::new()
+                .fill(theme.bg_card)
+                .stroke(theme.border_stroke)
+                .inner_margin(8)
+                .corner_radius(6)
+                .show(&mut cols[1], |ui| {
+                    ui.label(RichText::new("🛡 Sikkerhet & TCP Sensor-Protokoll").strong().color(theme.text_accent).size(12.5));
+                    ui.separator();
+                    ui.label(RichText::new("• 0 Injection-sårbarhet: Streng IEEE 754 flyttalls-parsing. Ingen kommandotolking.").size(11.0).color(theme.text_secondary));
+                    ui.label(RichText::new("• Minnebeskyttelse: Linjebuffer begrenset til 2048 bytes (avviser buffer overflow/DoS).").size(11.0).color(theme.text_secondary));
+                    ui.label(RichText::new("• O(1) Inkrementell oppdatering: Gram-matrisen oppdateres direkte uten å iterere over gamle data.").size(11.0).color(theme.text_secondary));
+                    ui.label(RichText::new("• Format: Send 'x, y\\n' eller JSON '{\"x\":1.0,\"y\":2.0}\\n'").size(11.0).color(theme.text_primary).monospace());
+                    ui.label(RichText::new("• Batch: Send 'BATCH\\n' etterfulgt av linjer og 'ENDBATCH\\n'").size(11.0).color(theme.text_primary).monospace());
+                    ui.label(RichText::new("• Avslutt: Send 'QUIT\\n' -> lukker tilkoblingen rent.").size(11.0).color(theme.text_primary).monospace());
+                });
+        });
     }
 
     fn render_help_tab(&mut self, ui: &mut egui::Ui, theme: &ThemeColors) {

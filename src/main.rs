@@ -2,6 +2,7 @@ mod classification;
 mod csv_analyzer;
 pub mod flac_loader;
 mod gpu;
+pub mod realtime_service;
 mod model;
 mod patterns;
 mod pdf_exporter;
@@ -183,6 +184,18 @@ enum Commands {
 
     /// Åpne det grafiske brukergrensesnittet (Standard når ingen kommando angis)
     Gui,
+
+    /// Start sanntids sensor-lyttetjeneste over TCP (for IoT og sanntidssensorer)
+    Service {
+        #[arg(long, default_value_t = 8765, help = "TCP-port som tjenesten skal lytte på")]
+        port: u16,
+
+        #[arg(long, default_value = "127.0.0.1", help = "Vertsadresse (standard: 127.0.0.1)")]
+        bind: String,
+
+        #[arg(long, default_value_t = 32, help = "Maksimal frekvens k i den inkrementelle modellen")]
+        max_k: usize,
+    },
 }
 
 fn main() {
@@ -206,6 +219,27 @@ fn main() {
 async fn run_cli_command(command: Commands) {
     match command {
         Commands::Gui => unreachable!(),
+        Commands::Service { port, bind, max_k } => {
+            println!("{}", "========================================================================".magenta());
+            println!("{}", " ⚡ STARTER SANNTIDS SENSOR-TJENESTE (TCP)...".white().bold());
+            println!(" Lytter på: {}:{}", bind, port);
+            println!(" Maks frekvens k: {}", max_k);
+            println!(" Sikkerhet: Streng numerisk validering, ingen skallinjeksjon");
+            println!(" Støtter: 'x,y', 'BATCH ... ENDBATCH', 'STATUS', 'RESET', 'QUIT'");
+            println!("{}", "========================================================================".magenta());
+
+            let mut controller = realtime_service::RealtimeServiceController::new(port, max_k);
+            controller.bind_host = bind;
+            if let Err(e) = controller.start() {
+                eprintln!("Feil ved oppstart av tjeneste: {}", e);
+                std::process::exit(1);
+            }
+
+            println!("Tjeneste kjører. Trykk Ctrl+C for å avslutte.");
+            while controller.is_running.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+        }
         Commands::Classify {
             formula,
             samples,

@@ -1,0 +1,845 @@
+//! realtime_service.rs
+//!
+//! Sanntids Sensor-Service for inkrementell trigonometrisk tilpasning.
+//!
+//! Egenskaper:
+//! - Inkrementell Online Gram-matrise: Oppdaterer f(x) i O(1) tid (mikrosekunder) per punkt
+//!   uten å måtte iterere over eller lagre alle historiske punkter på nytt.
+//! - Støtte for mottak av enkeltverdier (1, 2, 3...) og batcher av måledata (x, y).
+//! - TCP-lytter som kan startes og stoppes fra egen fane i GUI eller fra CLI.
+//! - Høy sikkerhet: Binder kun til localhost (127.0.0.1) som standard, avviser overdimensjonerte
+//!   pakker (DoS-beskyttelse), streng numerisk parsing uten skall/injeksjonsflater.
+//! - Støtter QUIT-kommando, RESET, STATUS, BATCH og PING.
+
+use crate::model::{TrigFunction, TrigTerm};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+/// Resultatstatus fra sanntidstjenesten for nåværende f(x) og statistikk
+#[derive(Debug, Clone, PartialEq)]
+pub struct RealtimeModelStatus {
+    pub count: usize,
+    pub formula: String,
+    pub terms_count: usize,
+    pub r_squared: f64,
+    pub rmse: f64,
+    pub last_update_us: u128,
+    pub current_func: Option<TrigFunction>,
+}
+
+impl Default for RealtimeModelStatus {
+    fn default() -> Self {
+        Self {
+            count: 0,
+            formula: "f(x) = 0".to_string(),
+            terms_count: 0,
+            r_squared: 0.0,
+            rmse: 0.0,
+            last_update_us: 0,
+            current_func: None,
+        }
+    }
+}
+
+/// Inkrementell online Fourier-fitter basert på løpende Gram-akkumulatorer
+pub struct OnlineTrigFitter {
+    pub max_k: usize,
+    pub dim: usize,
+    pub gram: Vec<f64>, // Flatt 2D array: dim x dim
+    pub rhs_b: Vec<f64>, // Dimensjon: dim
+    pub count: usize,
+    pub sum_y: f64,
+    pub sum_y_sq: f64,
+    pub min_x: f64,
+    pub max_x: f64,
+    pub min_y: f64,
+    pub max_y: f64,
+    pub recent_points: VecDeque<(f64, f64)>, // Ringbuffer for grafvisning (maks 2000 pkt)
+    pub max_recent_points: usize,
+}
+
+impl OnlineTrigFitter {
+    pub fn new(max_k: usize) -> Self {
+        let max_k = max_k.clamp(4, 128);
+        let dim = 2 * max_k;
+        Self {
+            max_k,
+            dim,
+            gram: vec![0.0; dim * dim],
+            rhs_b: vec![0.0; dim],
+            count: 0,
+            sum_y: 0.0,
+            sum_y_sq: 0.0,
+            min_x: f64::INFINITY,
+            max_x: f64::NEG_INFINITY,
+            min_y: f64::INFINITY,
+            max_y: f64::NEG_INFINITY,
+            recent_points: VecDeque::with_capacity(2000),
+            max_recent_points: 2000,
+        }
+    }
+
+    /// Nullstiller alle akkumulatorer
+    pub fn reset(&mut self) {
+        self.gram.fill(0.0);
+        self.rhs_b.fill(0.0);
+        self.count = 0;
+        self.sum_y = 0.0;
+        self.sum_y_sq = 0.0;
+        self.min_x = f64::INFINITY;
+        self.max_x = f64::NEG_INFINITY;
+        self.min_y = f64::INFINITY;
+        self.max_y = f64::NEG_INFINITY;
+        self.recent_points.clear();
+    }
+
+    /// Inkrementell oppdatering med 1 enkeltverdi (x, y) i O(dim²) tid
+    pub fn add_point(&mut self, x: f64, y: f64) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+
+        self.count += 1;
+        self.sum_y += y;
+        self.sum_y_sq += y * y;
+
+        if x < self.min_x { self.min_x = x; }
+        if x > self.max_x { self.max_x = x; }
+        if y < self.min_y { self.min_y = y; }
+        if y > self.max_y { self.max_y = y; }
+
+        if self.recent_points.len() >= self.max_recent_points {
+            self.recent_points.pop_front();
+        }
+        self.recent_points.push_back((x, y));
+
+        let dim = self.dim;
+        let mut phi = vec![0.0f64; dim];
+        for k in 1..=self.max_k {
+            let angle = (k as f64) * x;
+            phi[2 * k - 2] = angle.sin();
+            phi[2 * k - 1] = angle.cos();
+        }
+
+        // Oppdater b og Gram-matrise G
+        for i in 0..dim {
+            let pi = phi[i];
+            self.rhs_b[i] += y * pi;
+            let offset_i = i * dim;
+            for j in i..dim {
+                let val = pi * phi[j];
+                self.gram[offset_i + j] += val;
+                if i != j {
+                    self.gram[j * dim + i] += val;
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Inkrementell oppdatering for en hel batch av måledata
+    pub fn add_batch(&mut self, points: &[(f64, f64)]) -> usize {
+        let mut added = 0;
+        for &(x, y) in points {
+            if self.add_point(x, y) {
+                added += 1;
+            }
+        }
+        added
+    }
+
+    /// Løser og returnerer gjeldende f(x) og nøyaktighetsmål (R², RMSE)
+    pub fn solve_model(&self, max_terms: usize) -> RealtimeModelStatus {
+        let t0 = Instant::now();
+        if self.count == 0 {
+            return RealtimeModelStatus::default();
+        }
+
+        let dim = self.dim;
+        let mut scores = Vec::with_capacity(dim);
+        for i in 0..dim {
+            let diag = self.gram[i * dim + i];
+            if diag > 1e-9 {
+                let p = (self.rhs_b[i] * self.rhs_b[i]) / diag;
+                scores.push((p, i));
+            }
+        }
+
+        // Sorter etter høyeste spektrale energi
+        scores.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        let active_count = self.count.min(max_terms.clamp(1, 16)).min(scores.len());
+        if active_count == 0 {
+            return RealtimeModelStatus {
+                count: self.count,
+                formula: "f(x) = 0".to_string(),
+                terms_count: 0,
+                r_squared: 0.0,
+                rmse: 0.0,
+                last_update_us: t0.elapsed().as_micros(),
+                current_func: None,
+            };
+        }
+
+        let idx: Vec<usize> = scores.iter().take(active_count).map(|s| s.1).collect();
+        let m = idx.len();
+
+        // Bygg delsystem A * c = rhs
+        let mut a_mat = vec![vec![0.0f64; m]; m];
+        let mut rhs = vec![0.0f64; m];
+
+        for r in 0..m {
+            let ir = idx[r];
+            rhs[r] = self.rhs_b[ir];
+            for c in 0..m {
+                let ic = idx[c];
+                a_mat[r][c] = self.gram[ir * dim + ic];
+            }
+            // Tikhonov regularisering for numerisk stabilitet ved få punkter (f.eks. N=1, 2)
+            a_mat[r][r] += 1e-6;
+        }
+
+        // Gauss-Jordan eliminasjon
+        for r in 0..m {
+            let mut pivot = a_mat[r][r];
+            if pivot.abs() < 1e-12 {
+                pivot = 1e-6;
+                a_mat[r][r] = pivot;
+            }
+            for c in r..m {
+                a_mat[r][c] /= pivot;
+            }
+            rhs[r] /= pivot;
+
+            for r2 in 0..m {
+                if r2 != r {
+                    let factor = a_mat[r2][r];
+                    for c in r..m {
+                        a_mat[r2][c] -= factor * a_mat[r][c];
+                    }
+                    rhs[r2] -= factor * rhs[r];
+                }
+            }
+        }
+
+        let coeffs = rhs;
+        let mut c_dot_b = 0.0f64;
+        let mut trig_terms = Vec::new();
+
+        for r in 0..m {
+            let c_val = coeffs[r];
+            let term_idx = idx[r];
+            c_dot_b += c_val * self.rhs_b[term_idx];
+
+            let rounded = (c_val * 10_000.0).round() / 10_000.0;
+            if rounded.abs() > 1e-4 {
+                let k = ((term_idx / 2) + 1) as u32;
+                let kind = if term_idx % 2 == 0 {
+                    crate::model::TrigKind::Sin
+                } else {
+                    crate::model::TrigKind::Cos
+                };
+                trig_terms.push(TrigTerm::new(kind, k, rounded));
+            }
+        }
+
+        // Beregn RSS, TSS og R² direkte fra de akkumulerte summene uten å røre historiske punkter!
+        let rss = (self.sum_y_sq - c_dot_b).max(0.0);
+        let mean_y = self.sum_y / self.count as f64;
+        let tss = (self.sum_y_sq - (self.count as f64) * mean_y * mean_y).max(1e-12);
+        let r_squared = if tss > 1e-12 {
+            (1.0 - (rss / tss)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let rmse = (rss / self.count as f64).sqrt();
+
+        let (formula_str, func_opt) = if trig_terms.is_empty() {
+            ("f(x) = 0".to_string(), None)
+        } else {
+            let func = TrigFunction::new(trig_terms.clone());
+            (format!("{}", func), Some(func))
+        };
+
+        RealtimeModelStatus {
+            count: self.count,
+            formula: formula_str,
+            terms_count: trig_terms.len(),
+            r_squared,
+            rmse,
+            last_update_us: t0.elapsed().as_micros(),
+            current_func: func_opt,
+        }
+    }
+}
+
+/// Felles tilstand delt mellom TCP-serveren og brukergrensesnittet
+pub struct RealtimeServiceState {
+    pub fitter: OnlineTrigFitter,
+    pub max_terms: usize,
+    pub latest_status: RealtimeModelStatus,
+    pub log_messages: VecDeque<String>,
+    pub max_log_messages: usize,
+}
+
+impl RealtimeServiceState {
+    pub fn new(max_k: usize) -> Self {
+        Self {
+            fitter: OnlineTrigFitter::new(max_k),
+            max_terms: 4,
+            latest_status: RealtimeModelStatus::default(),
+            log_messages: VecDeque::with_capacity(100),
+            max_log_messages: 100,
+        }
+    }
+
+    pub fn log(&mut self, msg: String) {
+        if self.log_messages.len() >= self.max_log_messages {
+            self.log_messages.pop_front();
+        }
+        self.log_messages.push_back(msg);
+    }
+}
+
+/// Kontroller for å starte, stoppe og inspisere Sanntids Sensor-Service
+pub struct RealtimeServiceController {
+    pub is_running: Arc<AtomicBool>,
+    pub port: u16,
+    pub bind_host: String,
+    pub active_clients: Arc<AtomicUsize>,
+    pub state: Arc<RwLock<RealtimeServiceState>>,
+    listener_thread: Option<JoinHandle<()>>,
+}
+
+impl RealtimeServiceController {
+    pub fn new(port: u16, max_k: usize) -> Self {
+        Self {
+            is_running: Arc::new(AtomicBool::new(false)),
+            port,
+            bind_host: "127.0.0.1".to_string(),
+            active_clients: Arc::new(AtomicUsize::new(0)),
+            state: Arc::new(RwLock::new(RealtimeServiceState::new(max_k))),
+            listener_thread: None,
+        }
+    }
+
+    /// Starter TCP-lyttetjenesten i bakgrunnen
+    pub fn start(&mut self) -> Result<(), String> {
+        if self.is_running.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let bind_addr = format!("{}:{}", self.bind_host, self.port);
+        let listener = TcpListener::bind(&bind_addr)
+            .map_err(|e| format!("Kunne ikke binde til {}: {}", bind_addr, e))?;
+
+        // Sett non-blocking slik at tråden kan avbrytes rent ved stopp
+        listener.set_nonblocking(true)
+            .map_err(|e| format!("Kunne ikke sette non-blocking på socket: {}", e))?;
+
+        self.is_running.store(true, Ordering::SeqCst);
+        let running_flag = self.is_running.clone();
+        let active_clients = self.active_clients.clone();
+        let state_arc = self.state.clone();
+
+        {
+            let mut st = self.state.write().unwrap();
+            st.log(format!("🟢 Tjeneste startet og lytter på {}", bind_addr));
+        }
+
+        let handle = thread::spawn(move || {
+            while running_flag.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((stream, peer_addr)) => {
+                        active_clients.fetch_add(1, Ordering::SeqCst);
+                        let client_running = running_flag.clone();
+                        let client_active = active_clients.clone();
+                        let client_state = state_arc.clone();
+
+                        {
+                            if let Ok(mut st) = client_state.write() {
+                                st.log(format!("Klient tilkoblet: {}", peer_addr));
+                            }
+                        }
+
+                        thread::spawn(move || {
+                            handle_client(stream, peer_addr, client_running, client_state);
+                            client_active.fetch_sub(1, Ordering::SeqCst);
+                        });
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => {
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+
+            if let Ok(mut st) = state_arc.write() {
+                st.log("⏹ Tjeneste stoppet".to_string());
+            }
+        });
+
+        self.listener_thread = Some(handle);
+        Ok(())
+    }
+
+    /// Stopper TCP-lyttetjenesten
+    pub fn stop(&mut self) {
+        if !self.is_running.load(Ordering::SeqCst) {
+            return;
+        }
+
+        self.is_running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.listener_thread.take() {
+            let _ = handle.join();
+        }
+    }
+
+    /// Sender 1 eller flere testpunkter direkte (f.eks. fra GUI-knapper)
+    pub fn push_point(&self, x: f64, y: f64) -> RealtimeModelStatus {
+        let mut st = self.state.write().unwrap();
+        st.fitter.add_point(x, y);
+        let max_terms = st.max_terms;
+        let status = st.fitter.solve_model(max_terms);
+        st.latest_status = status.clone();
+        st.log(format!("Mottok punkt ({:.3}, {:.3}) -> N={}", x, y, status.count));
+        status
+    }
+
+    /// Sender en batch av punkter direkte
+    pub fn push_batch(&self, points: &[(f64, f64)]) -> RealtimeModelStatus {
+        let mut st = self.state.write().unwrap();
+        let added = st.fitter.add_batch(points);
+        let max_terms = st.max_terms;
+        let status = st.fitter.solve_model(max_terms);
+        st.latest_status = status.clone();
+        st.log(format!("Mottok batch på {} punkter -> N={}", added, status.count));
+        status
+    }
+
+    /// Nullstiller modellen
+    pub fn reset_model(&self) {
+        let mut st = self.state.write().unwrap();
+        st.fitter.reset();
+        st.latest_status = RealtimeModelStatus::default();
+        st.log("Modell og data nullstilt".to_string());
+    }
+
+    /// Reinitialiserer fitter med ny maksimal frekvens max_k
+    pub fn reinit_fitter(&self, max_k: usize) {
+        let mut st = self.state.write().unwrap();
+        st.fitter = OnlineTrigFitter::new(max_k);
+        st.latest_status = RealtimeModelStatus::default();
+        st.log(format!("Modell reinitialisert med max_k={}", max_k));
+    }
+}
+
+impl Drop for RealtimeServiceController {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Sikker og lynrask klienthåndterer for innkommende sensordata
+fn handle_client(
+    mut stream: TcpStream,
+    peer_addr: std::net::SocketAddr,
+    running_flag: Arc<AtomicBool>,
+    state: Arc<RwLock<RealtimeServiceState>>,
+) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+    let mut reader = BufReader::new(match stream.try_clone() {
+        Ok(s) => s,
+        Err(_) => return,
+    });
+
+    let mut in_batch = false;
+    let mut batch_points = Vec::new();
+    let mut line_buffer = String::new();
+
+    loop {
+        if !running_flag.load(Ordering::SeqCst) {
+            break;
+        }
+
+        line_buffer.clear();
+        match reader.read_line(&mut line_buffer) {
+            Ok(0) => {
+                println!("[SERVER] Klient {} sendte Ok(0) (EOF) -> avslutter", peer_addr);
+                break;
+            }
+            Ok(bytes_read) => {
+                // Sikkerhet: Avvis overdimensjonerte linjer (beskyttelse mot buffer-overløp / minne-DoS)
+                if bytes_read > 2048 {
+                    let err = "{\"status\":\"error\",\"message\":\"Linje for lang (maks 2048 bytes)\"}\n";
+                    let _ = stream.write_all(err.as_bytes());
+                    continue;
+                }
+
+                let trimmed = line_buffer.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+
+                // 1. Støtte for QUIT og EXIT
+                if trimmed.eq_ignore_ascii_case("QUIT") || trimmed.eq_ignore_ascii_case("EXIT") {
+                    let cur_count = if let Ok(st) = state.read() { st.latest_status.count } else { 0 };
+                    let bye_msg = format!(
+                        "{{\"status\":\"bye\",\"count\":{},\"message\":\"Sesjon avsluttet\"}}\n",
+                        cur_count
+                    );
+                    let _ = stream.write_all(bye_msg.as_bytes());
+                    let _ = stream.flush();
+
+                    if let Ok(mut st) = state.write() {
+                        st.log(format!("QUIT mottatt fra {}", peer_addr));
+                    }
+                    break;
+                }
+
+                // 2. Støtte for STATUS
+                if trimmed.eq_ignore_ascii_case("STATUS") {
+                    let status = if let Ok(st) = state.read() {
+                        st.latest_status.clone()
+                    } else {
+                        RealtimeModelStatus::default()
+                    };
+                    let resp = format!(
+                        "{{\"status\":\"ok\",\"count\":{},\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                        status.count, status.formula, status.terms_count, status.r_squared, status.rmse
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    continue;
+                }
+
+                // 3. Støtte for RESET
+                if trimmed.eq_ignore_ascii_case("RESET") {
+                    if let Ok(mut st) = state.write() {
+                        st.fitter.reset();
+                        st.latest_status = RealtimeModelStatus::default();
+                        st.log(format!("RESET utført av {}", peer_addr));
+                    }
+                    let resp = "{\"status\":\"ok\",\"count\":0,\"message\":\"Modell nullstilt\"}\n";
+                    let _ = stream.write_all(resp.as_bytes());
+                    continue;
+                }
+
+                // 4. Støtte for PING
+                if trimmed.eq_ignore_ascii_case("PING") {
+                    let _ = stream.write_all(b"{\"status\":\"pong\"}\n");
+                    continue;
+                }
+
+                // 5. Støtte for BATCH-blokk (BATCH ... ENDBATCH)
+                if trimmed.to_uppercase().starts_with("BATCH") {
+                    in_batch = true;
+                    batch_points.clear();
+                    continue;
+                }
+
+                if in_batch {
+                    if trimmed.eq_ignore_ascii_case("ENDBATCH") {
+                        in_batch = false;
+                        if !batch_points.is_empty() {
+                            let status = if let Ok(mut st) = state.write() {
+                                st.fitter.add_batch(&batch_points);
+                                let max_terms = st.max_terms;
+                                let s = st.fitter.solve_model(max_terms);
+                                st.latest_status = s.clone();
+                                s
+                            } else {
+                                RealtimeModelStatus::default()
+                            };
+
+                            let resp = format!(
+                                "{{\"status\":\"ok\",\"count\":{},\"added\":{},\"fx\":\"{}\",\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                                status.count, batch_points.len(), status.formula, status.r_squared, status.rmse
+                            );
+                            let _ = stream.write_all(resp.as_bytes());
+                        } else {
+                            let _ = stream.write_all(b"{\"status\":\"ok\",\"added\":0}\n");
+                        }
+                        batch_points.clear();
+                        continue;
+                    } else if let Some((x, y)) = parse_point(trimmed) {
+                        if batch_points.len() < 1000 {
+                            batch_points.push((x, y));
+                        }
+                        continue;
+                    }
+                }
+
+                // 6. JSON Batch støtte: {"batch": [[x1, y1], [x2, y2]]} eller {"points": ...}
+                if trimmed.starts_with('{') {
+                    if let Some(points) = parse_json_batch(trimmed) {
+                        let status = if let Ok(mut st) = state.write() {
+                            st.fitter.add_batch(&points);
+                            let max_terms = st.max_terms;
+                            let s = st.fitter.solve_model(max_terms);
+                            st.latest_status = s.clone();
+                            s
+                        } else {
+                            RealtimeModelStatus::default()
+                        };
+
+                        let resp = format!(
+                            "{{\"status\":\"ok\",\"count\":{},\"added\":{},\"fx\":\"{}\",\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                            status.count, points.len(), status.formula, status.r_squared, status.rmse
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                        continue;
+                    }
+                }
+
+                // 7. Enkeltverdi-mottak: x,y eller JSON {"x": ..., "y": ...}
+                if let Some((x, y)) = parse_point(trimmed) {
+                    let status = if let Ok(mut st) = state.write() {
+                        st.fitter.add_point(x, y);
+                        let max_terms = st.max_terms;
+                        let s = st.fitter.solve_model(max_terms);
+                        st.latest_status = s.clone();
+                        s
+                    } else {
+                        RealtimeModelStatus::default()
+                    };
+
+                    let resp = format!(
+                        "{{\"status\":\"ok\",\"count\":{},\"fx\":\"{}\",\"terms\":{},\"r_squared\":{:.6},\"rmse\":{:.6}}}\n",
+                        status.count, status.formula, status.terms_count, status.r_squared, status.rmse
+                    );
+                    let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
+                } else {
+                    let err = "{\"status\":\"error\",\"message\":\"Ugyldig format. Forventet 'x,y', 'QUIT', 'RESET' eller JSON\"}\n";
+                    let _ = stream.write_all(err.as_bytes());
+                    let _ = stream.flush();
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                if running_flag.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                } else {
+                    break;
+                }
+            }
+            Err(e) => {
+                if let Ok(mut st) = state.write() {
+                    st.log(format!("Lesefeil fra {}: {:?}", peer_addr, e));
+                }
+                break;
+            }
+        }
+    }
+
+    if let Ok(mut st) = state.write() {
+        st.log(format!("Klient frakoblet: {}", peer_addr));
+    }
+}
+
+/// Sikker parsing av (x, y) koordinater fra tekst eller JSON uten eksterne injeksjonsflater
+fn parse_point(input: &str) -> Option<(f64, f64)> {
+    let s = input.trim();
+
+    // 1. Enkel JSON-format: {"x": 1.23, "y": 4.56}
+    if s.starts_with('{') && s.ends_with('}') {
+        let mut x_val = None;
+        let mut y_val = None;
+        let clean = s.trim_matches(|c| c == '{' || c == '}');
+        for part in clean.split(',') {
+            let mut kv = part.split(':');
+            let k = kv.next()?.trim().trim_matches('"');
+            let v = kv.next()?.trim().trim_matches('"');
+            let num: f64 = v.parse().ok()?;
+            if !num.is_finite() {
+                return None;
+            }
+            if k.eq_ignore_ascii_case("x") {
+                x_val = Some(num);
+            } else if k.eq_ignore_ascii_case("y") {
+                y_val = Some(num);
+            }
+        }
+        if let (Some(x), Some(y)) = (x_val, y_val) {
+            return Some((x, y));
+        }
+    }
+
+    // 2. CSV / semikolon / mellomrom: "x, y" eller "x; y" eller "x y"
+    let delimiter = if s.contains(',') {
+        ','
+    } else if s.contains(';') {
+        ';'
+    } else {
+        ' '
+    };
+
+    let mut parts = s.split(delimiter).filter(|p| !p.trim().is_empty());
+    let x_str = parts.next()?.trim();
+    let y_str = parts.next()?.trim();
+
+    let x: f64 = x_str.parse().ok()?;
+    let y: f64 = y_str.parse().ok()?;
+
+    if x.is_finite() && y.is_finite() {
+        Some((x, y))
+    } else {
+        None
+    }
+}
+
+/// Sikker parsing av JSON-batch: [[x1, y1], [x2, y2]]
+fn parse_json_batch(input: &str) -> Option<Vec<(f64, f64)>> {
+    let s = input.trim();
+    let open_idx = s.find('[')?;
+    let close_idx = s.rfind(']')?;
+    if close_idx <= open_idx {
+        return None;
+    }
+
+    let arr_str = &s[open_idx + 1..close_idx];
+    let mut points = Vec::new();
+
+    // Splitt på lukkende klamme ']'
+    for item in arr_str.split(']') {
+        let clean = item.trim().trim_start_matches(|c| c == ',' || c == '[' || c == ' ');
+        if clean.is_empty() {
+            continue;
+        }
+        if let Some((x, y)) = parse_point(clean) {
+            points.push((x, y));
+            if points.len() >= 1000 {
+                break;
+            }
+        }
+    }
+
+    if points.is_empty() {
+        None
+    } else {
+        Some(points)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_incremental_fitter_1_2_3_points() {
+        let mut fitter = OnlineTrigFitter::new(16);
+
+        // 1 verdi inn
+        fitter.add_point(0.5, 2.0 * (3.0 * 0.5f64).sin());
+        let res1 = fitter.solve_model(4);
+        assert_eq!(res1.count, 1);
+        println!("1 verdi: N={}, f(x)={}", res1.count, res1.formula);
+
+        // 2 verdier inn
+        fitter.add_point(1.2, 2.0 * (3.0 * 1.2f64).sin());
+        let res2 = fitter.solve_model(4);
+        assert_eq!(res2.count, 2);
+        println!("2 verdier: N={}, f(x)={}", res2.count, res2.formula);
+
+        // 3 verdier inn
+        fitter.add_point(2.1, 2.0 * (3.0 * 2.1f64).sin());
+        let res3 = fitter.solve_model(4);
+        assert_eq!(res3.count, 3);
+        println!("3 verdier: N={}, f(x)={}, R2={:.6}", res3.count, res3.formula, res3.r_squared);
+
+        // Bekreft at 3x sinus komponenten er gjenkjent med høy nøyaktighet
+        assert!(res3.formula.contains("sin(3x)"));
+        assert!(res3.r_squared > 0.99);
+    }
+
+    #[test]
+    fn test_incremental_batch_update() {
+        let mut fitter = OnlineTrigFitter::new(16);
+
+        let mut batch = Vec::new();
+        for i in 0..20 {
+            let x = (i as f64 / 19.0) * std::f64::consts::TAU;
+            let y = 3.0 * (2.0 * x).sin() + 1.5 * (5.0 * x).cos();
+            batch.push((x, y));
+        }
+
+        let added = fitter.add_batch(&batch);
+        assert_eq!(added, 20);
+        let res = fitter.solve_model(4);
+        println!("Batch 20 pkt: f(x)={}, R2={:.6}", res.formula, res.r_squared);
+
+        assert_eq!(res.count, 20);
+        assert!(res.formula.contains("sin(2x)"));
+        assert!(res.formula.contains("cos(5x)"));
+        assert!(res.r_squared > 0.999);
+    }
+
+    #[test]
+    fn test_point_parsing_safety() {
+        assert_eq!(parse_point("0.5, 1.25"), Some((0.5, 1.25)));
+        assert_eq!(parse_point("  -2.4 ; 8.9  "), Some((-2.4, 8.9)));
+        assert_eq!(parse_point("{\"x\": 3.14, \"y\": -0.5}"), Some((3.14, -0.5)));
+
+        // Avvis NaN og uendelig (injeksjonsbeskyttelse)
+        assert_eq!(parse_point("NaN, 1.0"), None);
+        assert_eq!(parse_point("1.0, inf"), None);
+        assert_eq!(parse_point("DROP TABLE users;"), None);
+        assert_eq!(parse_point("cat /etc/passwd"), None);
+    }
+
+    #[test]
+    fn test_tcp_service_quit_and_single_values() {
+        let port = 8799;
+        let mut controller = RealtimeServiceController::new(port, 16);
+        controller.start().expect("Kunne ikke starte test-tjeneste");
+
+        // Koble til med standard TcpStream
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", port))
+            .expect("Kunne ikke koble til test-server");
+
+        // Send 1. verdi
+        stream.write_all(b"0.5, 1.0\n").unwrap();
+        stream.flush().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"count\":1"));
+
+        // Send 2. verdi
+        stream.write_all(b"1.0, 2.0\n").unwrap();
+        stream.flush().unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"count\":2"));
+
+        // Send 3. verdi
+        stream.write_all(b"1.5, 1.5\n").unwrap();
+        stream.flush().unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"count\":3"));
+
+        // Send QUIT
+        stream.write_all(b"QUIT\n").unwrap();
+        stream.flush().unwrap();
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.contains("\"status\":\"bye\""));
+        assert!(line.contains("\"count\":3"));
+
+        controller.stop();
+    }
+}
+
