@@ -2,6 +2,7 @@
 param (
     [switch]$DebugMode,
     [switch]$Build,
+    [switch]$Diagram,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$AppArgs
 )
@@ -13,6 +14,29 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 chcp 65001 >$null
 
 Set-Location -Path $PSScriptRoot
+
+if ($Diagram) {
+    Write-Host "========================================================================" -ForegroundColor Magenta
+    Write-Host " ⚡ SYSTEMARKITEKTUR, DATAFLYT OG TILSTANDSDIAGRAMMER" -ForegroundColor White
+    Write-Host "========================================================================" -ForegroundColor Magenta
+    Write-Host " 1. Brukergrensesnitt (egui/eframe) -> 4 Faner: Funksjon, CSV/FLAC, Sensor, Hjelp" -ForegroundColor Cyan
+    Write-Host " 2. Lyddekoding & Spektralanalyse: claxon -> Trapesintegrasjon -> OMP -> LeastSquares" -ForegroundColor Cyan
+    Write-Host " 3. GPU Beregningskjerne (wgpu / WGSL): 256 tråder -> Newton-Raphson rotfinner" -ForegroundColor Cyan
+    Write-Host " 4. Klassifisering: Klasse 0-4, Terskler T1-T4, Topp- og bunnpunkter" -ForegroundColor Cyan
+    Write-Host " 5. Sanntids Sensor-Service: O(1) Inkrementell Gram -> TCP & HTTP GET (JSON)" -ForegroundColor Cyan
+    Write-Host " 6. Rapportering: Chromium Headless PDF-eksport & WiX MSI" -ForegroundColor Cyan
+    Write-Host "========================================================================" -ForegroundColor Magenta
+
+    $diagHtml = Join-Path $PSScriptRoot "diagrams.html"
+    if (Test-Path $diagHtml) {
+        Write-Host " Åpner fullstendige interaktive Mermaid-diagrammer i nettleseren..." -ForegroundColor Green
+        Start-Process $diagHtml
+    } else {
+        Write-Host " Fant ikke $diagHtml. Se diagrammene i README.md" -ForegroundColor Yellow
+    }
+    exit 0
+}
+
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
 $exePath = if ($DebugMode) {

@@ -580,53 +580,49 @@ Diagrammet illustrerer tilstandene og overgangene i applikasjonens levetid under
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle: Applikasjon starter (Standard f(x) ferdig innlest)
+    [*] --> Idle: Applikasjon starter med standard formel
 
     state Fane1_Funksjonsanalyse {
         Idle --> VenterPaaFormel: Bruker redigerer formel
-        VenterPaaFormel --> GPU_Beregning: Klikker "⚡ Kjoer analyse" / Enter
-        GPU_Beregning --> ResultatVises: GPU returnerer ekstrema & klasser
-        ResultatVises --> InteraktivtPlott: Pan/zoom, klikk for inspeksjon
-        ResultatVises --> EksportererPDF: Klikker "📄 Lagre PDF"
+        VenterPaaFormel --> GPU_Beregning: Klikker Kjoer analyse eller trykker Enter
+        GPU_Beregning --> ResultatVises: GPU returnerer ekstrema og klasser
+        ResultatVises --> InteraktivtPlott: Pan eller zoom for inspeksjon
+        ResultatVises --> EksportererPDF: Klikker Lagre PDF
         EksportererPDF --> ResultatVises: PDF generert via Chromium
     }
 
     state Fane2_CSV_FLAC_Analyse {
         Idle --> LasterFil: Velger CSV eller FLAC fil
         LasterFil --> StillhetsSjekk: flac_loader detekterer start
-        StillhetsSjekk --> DataKlar: Automatisk satt til aktiv lyd (t >= 0.20s)
+        StillhetsSjekk --> DataKlar: Automatisk satt til aktiv lyd
+        DataKlar --> SubOmraadeValg: Velg minX og maxX i grafen
+        SubOmraadeValg --> SubOmraadeValg: Oppdaterer gult rektangel
+        SubOmraadeValg --> OMP_Beregning: Klikker Analyser og Finn Formel
+        OMP_Beregning --> ModellIdentifisert: Best match f(x) funnet
+        ModellIdentifisert --> RullegardinVisning: Formaterer formel med 4 ledd per linje
 
-        DataKlar --> SubOmraadeValg: Venstreklikk (minX) / Hoyreklikk (maxX)
-        SubOmraadeValg --> SubOmraadeValg: Oppdaterer gult rektangel & linjer
-
-        SubOmraadeValg --> OMP_Beregning: Klikker "🔍 Analyser & Finn Formel"
-        OMP_Beregning --> ModellIdentifisert: OMP ferdig (Best match f(x) funnet)
-
-        ModellIdentifisert --> RullegardinVisning: f(x) formateres (4 ledd/linje)
-        
         state RullegardinVisning {
-            [*] --> RulletNed: Standard visning (Scrollbar aktiv hvis > 6 linjer)
-            RulletNed --> RulletOpp: Bruker klikker "▲ Rull opp"
-            RulletOpp --> RulletNed: Bruker klikker "▼ Rull ned"
+            [*] --> RulletNed: Standard visning med rullebjelke
+            RulletNed --> RulletOpp: Bruker klikker Rull opp
+            RulletOpp --> RulletNed: Bruker klikker Rull ned
         }
 
-        ModellIdentifisert --> OverfoerFormel: Klikker "⚡ Overfoer formel"
-        OverfoerFormel --> GPU_Beregning: Bytt til Fane 1 med identifisert formel
-
-        ModellIdentifisert --> LagreSubCSV: Klikker "💾 Lagre sub-omraade..."
+        ModellIdentifisert --> OverfoerFormel: Klikker Overfoer formel
+        OverfoerFormel --> GPU_Beregning: Bytt til Fane 1 med formel
+        ModellIdentifisert --> LagreSubCSV: Klikker Lagre sub-omraade
         LagreSubCSV --> ModellIdentifisert: Skrevet til CSV
     }
 
     state Fane3_Sanntids_Sensor_Service {
         Idle --> TjenesteStoppet: Bruker velger Fane 3
-        TjenesteStoppet --> TjenesteAktiv: Klikker "▶ Start Tjeneste" (Lytter på TCP port)
-        TjenesteAktiv --> MottarMalinger: Sensor sender punkt (x, y) eller batch
-        MottarMalinger --> InkrementellOppdatering: O(1) Gram-akkumulering (ingen reprosessering)
-        InkrementellOppdatering --> MottarMalinger: Nytt N, oppdatert f(x), R² & sanntidsplot
+        TjenesteStoppet --> TjenesteAktiv: Starter TCP og HTTP tjeneste
+        TjenesteAktiv --> MottarMalinger: Sensor sender punkt eller batch
+        MottarMalinger --> InkrementellOppdatering: Inkrementell Gram akkumulering
+        InkrementellOppdatering --> MottarMalinger: Oppdatert fx og sanntidsplot
         TjenesteAktiv --> AvslutterKlient: Sensor sender QUIT
-        AvslutterKlient --> TjenesteAktiv: Sokkel lukket rent (status: bye)
-        TjenesteAktiv --> TjenesteStoppet: Klikker "⏹ Stopp Tjeneste"
-        TjenesteAktiv --> ModellNullstilt: Klikker "🔄 Nullstill modell"
+        AvslutterKlient --> TjenesteAktiv: Sokkel lukket rent med status bye
+        TjenesteAktiv --> TjenesteStoppet: Stopper tjeneste
+        TjenesteAktiv --> ModellNullstilt: Nullstiller modell
         ModellNullstilt --> TjenesteAktiv
     }
 ```
@@ -641,35 +637,36 @@ Den dedikerte fanen **⚡ Sanntids Sensor-Service** og CLI-subkommandoen `servic
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Sensor as Sensor / Klient (TCP)
-    participant Server as RealtimeServer (TCP Listener)
+    actor Sensor as Sensor / Klient (TCP og HTTP)
+    participant Server as RealtimeServer (TCP og HTTP Listener)
     participant Fitter as OnlineTrigFitter (Inkrementell Gram)
-    participant GUI as ExtremaApp (Sanntids-fane & Plot)
+    participant GUI as ExtremaApp (Sanntids-fane og Plot)
 
-    Note over Sensor,Server: Tilkobling etablert (127.0.0.1:8765, TCP_NODELAY)
-    Sensor->>Server: Send verdi 1: "0.5, 1.0\n"
-    Server->>Fitter: add_point(0.5, 1.0) -> O(1) Gram-oppdatering (< 1.5 µs)
-    Fitter->>Fitter: solve_model(max_terms) -> RSS & R² fra akkumulatorer
-    Server-->>Sensor: {"status":"ok","count":1,"fx":"f(x) = 2.09*sin(x)"}
-    Server->>GUI: Oppdater KPI (N=1, R²=1.0) & legg punkt til i Sanntids-plot
+    Note over Sensor,Server: Tilkobling etablert (127.0.0.1:8765)
+    Sensor->>Server: Send verdi 1 (f.eks. GET /1 eller 0.5, 1.0)
+    Server->>Fitter: add_point -> Inkrementell Gram-oppdatering O(1)
+    Fitter->>Fitter: solve_model -> R2 og RMSE fra akkumulatorer
+    Server-->>Sensor: JSON: status ok, count 1, oppdatert fx
+    Server->>GUI: Oppdater KPI (N=1) og legg punkt til i Sanntids-plot
 
-    Sensor->>Server: Send verdi 2 & 3: "1.0, 2.0\n", "1.5, 1.5\n"
-    Server->>Fitter: add_point(x, y) -> Utvid eksisterende matrise (ingen reprosessering!)
-    Server-->>Sensor: {"status":"ok","count":3,"fx":"..."}
+    Sensor->>Server: Send verdi 2 og 3 (eller GET /2, GET /3)
+    Server->>Fitter: add_point -> Utvid eksisterende matrise uten omberegning
+    Server-->>Sensor: JSON: status ok, count 3, oppdatert fx
     Server->>GUI: Oppdater sanntidskurve f(x) og N=3
 
-    Sensor->>Server: BATCH\n2.0, 0.5\n2.5, -0.5\nENDBATCH\n
-    Server->>Fitter: add_batch(points)
-    Server-->>Sensor: {"status":"ok","count":5,"added":2,"fx":"..."}
+    Sensor->>Server: BATCH blokk (eller GET /batch)
+    Server->>Fitter: add_batch med maalinger
+    Server-->>Sensor: JSON: status ok, count 13, added 10
+    Server->>GUI: Oppdater sanntidsgraf med ny batch
 
     Note over Sensor,Server: Sikkerhetskontroll (Injeksjonsvern)
-    Sensor->>Server: "DROP TABLE users; NaN, 1.0\n"
-    Server-->>Sensor: {"status":"error","message":"Ugyldig format..."}
+    Sensor->>Server: Ugyldig data: DROP TABLE eller NaN
+    Server-->>Sensor: JSON: status error (Ugyldig format)
 
     Note over Sensor,Server: Avslutning
-    Sensor->>Server: "QUIT\n"
-    Server-->>Sensor: {"status":"bye","count":5,"message":"Sesjon avsluttet"}
-    Server--xSensor: Sokkelforbindelse lukket rent
+    Sensor->>Server: Send QUIT (eller GET /quit)
+    Server-->>Sensor: JSON: status bye, sesjon avsluttet
+    Server--xSensor: Forbindelse lukket rent
 ```
 
 #### B. Matematisk Prinsipp for Inkrementell $\mathcal{O}(1)$ Oppdatering
@@ -701,6 +698,12 @@ Eller via PowerShell:
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\run.ps1
 ```
+
+For å vise fullstendige interaktive arkitektur- og systemdiagrammer i nettleser og terminal:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run.ps1 -Diagram
+```
+*(eller åpne [`diagrams.html`](diagrams.html) direkte i nettleseren)*
 
 ### B. Funksjonalitet i Brukergrensesnittet:
 1. **Fane 1: Funksjonsanalyse & Graf**:
