@@ -153,10 +153,10 @@ pub struct ExtremaApp {
     pub poly_log_b: f64,
     pub poly_log_degree: usize,
     pub poly_log_inv_degree: usize,
+    pub poly_log_x_ln_degree: usize,
     pub poly_log_auto_terms: bool,
     pub poly_log_auto_ab: bool,
     pub poly_log_include_ln: bool,
-    pub poly_log_include_x_ln: bool,
     pub poly_log_result: Option<crate::poly_log_simplifier::PolyLogSimplifierResult>,
     pub poly_log_error: Option<String>,
     pub poly_log_plot_bounds_request: Option<[f64; 4]>,
@@ -255,10 +255,10 @@ impl Default for ExtremaApp {
             poly_log_b: 6.28,
             poly_log_degree: 6,
             poly_log_inv_degree: 2,
+            poly_log_x_ln_degree: 2,
             poly_log_auto_terms: true,
             poly_log_auto_ab: true,
             poly_log_include_ln: true,
-            poly_log_include_x_ln: false,
             poly_log_result: None,
             poly_log_error: None,
             poly_log_plot_bounds_request: None,
@@ -2600,10 +2600,12 @@ impl ExtremaApp {
                         ui.checkbox(&mut self.poly_log_include_ln, RichText::new("log(x)").strong().color(theme.text_accent))
                             .on_hover_text("Inkluder naturlig logaritme ln(x)");
 
-                        ui.checkbox(&mut self.poly_log_include_x_ln, "x*log(x)")
-                            .on_hover_text("Inkluder produktledd x * ln(x)");
+                        ui.separator();
+                        ui.label(RichText::new("Maks xⁿ·log(x) grad:").strong().color(theme.text_secondary).size(12.0));
+                        ui.add(egui::DragValue::new(&mut self.poly_log_x_ln_degree).range(0..=20).speed(0.2))
+                            .on_hover_text("Høyeste potens n for xⁿ * log(x) ledd (x*log(x), x²*log(x), x³*log(x)...). Kan settes vilkårlig høyt! (0 = ingen)");
                     } else {
-                        ui.label(RichText::new("(Optimal grad opptil x¹⁴, 1/xᵏ og basis tilpasses automatisk mot R² = 1.0)").italics().color(theme.text_secondary).size(11.5));
+                        ui.label(RichText::new("(Optimal grad opptil x¹⁴, 1/xᵏ, xⁿ·log(x) og basis tilpasses automatisk mot R² = 1.0)").italics().color(theme.text_secondary).size(11.5));
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2618,8 +2620,8 @@ impl ExtremaApp {
                                     let config = crate::poly_log_simplifier::PolyLogBasisConfig {
                                         max_degree: self.poly_log_degree,
                                         max_inv_degree: self.poly_log_inv_degree,
+                                        max_x_ln_degree: self.poly_log_x_ln_degree,
                                         include_ln: self.poly_log_include_ln,
-                                        include_x_ln: self.poly_log_include_x_ln,
                                         num_samples: 800,
                                         auto_terms: self.poly_log_auto_terms,
                                     };
@@ -2726,35 +2728,63 @@ impl ExtremaApp {
 
             ui.add_space(5.0);
 
-            // 3. Tabell over ledd og koeffisienter
+            // 3. Tabell over ledd og koeffisienter (maks 7 verdier i visning om gangen med rullegardin)
             egui::Frame::new()
                 .fill(theme.bg_card)
                 .stroke(theme.border_stroke)
                 .inner_margin(8)
                 .corner_radius(6)
                 .show(ui, |ui| {
-                    ui.label(RichText::new("📊 Identifiserte polynom- og logaritmeledd:").strong().color(theme.text_primary).size(12.5));
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("📊 Identifiserte ledd:").strong().color(theme.text_primary).size(12.5));
+                        ui.label(RichText::new(format!("({} ledd totalt - maks 7 synlige samtidig, bruk rullegardin)", res.terms.len()))
+                            .size(11.0).color(theme.text_secondary));
+                    });
                     ui.add_space(2.0);
 
-                    egui::Grid::new("poly_log_terms_grid")
-                        .striped(true)
-                        .min_col_width(120.0)
-                        .show(ui, |ui| {
-                            ui.label(RichText::new("Ledd").strong().color(theme.text_accent));
-                            ui.label(RichText::new("Type").strong().color(theme.text_accent));
-                            ui.label(RichText::new("Koeffisient").strong().color(theme.text_accent));
-                            ui.label(RichText::new("Matematisk representasjon").strong().color(theme.text_accent));
-                            ui.end_row();
+                    let row_height = 23.0;
+                    // Høyde for maks 7 rader pluss overskriftsrad
+                    let scroll_max_h = (row_height * 7.5) + 26.0;
 
-                            for t in &res.terms {
-                                ui.label(RichText::new(&t.name).monospace().strong());
-                                let kind = if t.is_log { "Logaritme" } else if t.power == Some(0) { "Konstant" } else if let Some(p) = t.power { if p < 0 { "Invers polynom" } else { "Polynom" } } else { "Polynom" };
-                                ui.label(kind);
-                                ui.label(RichText::new(format!("{:.6}", t.coeff)).monospace());
-                                let expr = if t.name == "1" { format!("{:.4}", t.coeff) } else { format!("{:.4} * {}", t.coeff, t.name) };
-                                ui.label(RichText::new(expr).monospace().color(theme.text_secondary));
-                                ui.end_row();
-                            }
+                    egui::ScrollArea::vertical()
+                        .id_salt("poly_log_terms_rullegardin_scroll")
+                        .max_height(scroll_max_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            egui::Grid::new("poly_log_terms_grid")
+                                .striped(true)
+                                .min_col_width(120.0)
+                                .spacing([12.0, 5.0])
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new("Ledd").strong().color(theme.text_accent));
+                                    ui.label(RichText::new("Type").strong().color(theme.text_accent));
+                                    ui.label(RichText::new("Koeffisient").strong().color(theme.text_accent));
+                                    ui.label(RichText::new("Matematisk representasjon").strong().color(theme.text_accent));
+                                    ui.end_row();
+
+                                    for t in &res.terms {
+                                        ui.label(RichText::new(&t.name).monospace().strong());
+                                        let kind = if t.is_log {
+                                            if t.log_power == 0 { "Logaritme (ln)" } else { "Polynom-log (xⁿ·ln)" }
+                                        } else if t.power == Some(0) {
+                                            "Konstant"
+                                        } else if let Some(p) = t.power {
+                                            if p < 0 { "Invers polynom (1/xᵏ)" } else { "Polynom (xᵏ)" }
+                                        } else {
+                                            "Polynom"
+                                        };
+                                        ui.label(kind);
+                                        let coeff_str = crate::poly_log_simplifier::format_coeff(t.coeff);
+                                        ui.label(RichText::new(&coeff_str).monospace().strong());
+                                        let expr = if t.name == "1" {
+                                            coeff_str
+                                        } else {
+                                            format!("{} * {}", coeff_str, t.name)
+                                        };
+                                        ui.label(RichText::new(expr).monospace().color(theme.text_secondary));
+                                        ui.end_row();
+                                    }
+                                });
                         });
                 });
 

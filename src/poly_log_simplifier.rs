@@ -4,13 +4,14 @@
 // Modul: poly_log_simplifier.rs
 // Hensikt: Konvertere og forenkle trigonometriske uttrykk (bestående av sinus og cosinus)
 //          til en algebraisk modell bestående av polynomer og logaritmer, f.eks. x^2 + log(x),
-//          samt inverse potenser 1/x, 1/x^2, 1/x^3 ... (vilkårlig mange ledd) med nøyaktighet R² -> 1.
+//          inverse potenser 1/x, 1/x^2, 1/x^3 ... og x^n * log(x) ledd (vilkårlig mange ledd)
+//          med nøyaktighet R² -> 1.0 (1.000000).
 //
 // Støtter:
 // 1. Minste kvadraters optimale tilnærming over et gitt definisjonsområde [a, b] via skalert Householder QR.
 // 2. Vilkårlig mange positive polynomgrader (x^1, x^2, ..., x^k)
 // 3. Vilkårlig mange inverse potensledd (1/x, 1/x^2, 1/x^3, ..., 1/x^k)
-// 4. Logaritmiske ledd (ln(x) / log(x)), samt x*ln(x)
+// 4. Vilkårlig mange polynom-logaritmeledd: x^n * log(x) for n = 1, 2, 3, ... samt ren log(x)
 // 5. Automatisk bestemmelse av optimal modell med nøyaktighet helt opp til R² = 1.0 (0.999999+).
 // 6. Automatisk deteksjon av definisjonsområde [a, b] basert på trigonometrisk fundamentalperiode.
 
@@ -20,8 +21,8 @@ use crate::model::TrigFunction;
 pub struct PolyLogBasisConfig {
     pub max_degree: usize,         // Høyeste positive x-potens (vilkårlig mange: f.eks. 6, 12, 20...)
     pub max_inv_degree: usize,     // Høyeste inverse x-potens 1/x^k (vilkårlig mange: 1/x, 1/x^2, 1/x^3...)
-    pub include_ln: bool,          // Inkluder ln(x)
-    pub include_x_ln: bool,        // Inkluder x * ln(x)
+    pub max_x_ln_degree: usize,    // Høyeste x^n * log(x) potens (vilkårlig mange: x*log(x), x^2*log(x), x^3*log(x)...)
+    pub include_ln: bool,          // Inkluder ln(x) (tilsvarer x^0 * ln(x))
     pub num_samples: usize,        // Antall integrasjonspunkter over [a, b]
     pub auto_terms: bool,          // Automatisk tilpasning av optimalt antall ledd og grad
 }
@@ -31,8 +32,8 @@ impl Default for PolyLogBasisConfig {
         Self {
             max_degree: 6,
             max_inv_degree: 2,
+            max_x_ln_degree: 2,
             include_ln: true,
-            include_x_ln: false,
             num_samples: 800,
             auto_terms: true,
         }
@@ -41,11 +42,12 @@ impl Default for PolyLogBasisConfig {
 
 #[derive(Clone, Debug)]
 pub struct PolyLogTerm {
-    pub name: String,        // f.eks. "x^2", "1/x^2", "1/x^3", "ln(x)", "x", "1"
-    pub latex_name: String,  // f.eks. "x^2", "\frac{1}{x^2}", "\ln(x)", "x", "1"
+    pub name: String,        // f.eks. "x^2", "1/x^2", "x^3*log(x)", "ln(x)", "x", "1"
+    pub latex_name: String,  // f.eks. "x^2", "\frac{1}{x^2}", "x^{3}\ln(x)", "\ln(x)", "x", "1"
     pub coeff: f64,          // Nøyaktig koeffisient (f64)
     pub power: Option<i32>,  // Potens for x: positiv for x^p, negativ for 1/x^|p|, 0 for konstant
     pub is_log: bool,        // Er dette et log-ledd?
+    pub log_power: usize,    // 0 for ren ln(x), n for x^n * ln(x)
 }
 
 #[derive(Clone)]
@@ -109,8 +111,6 @@ pub fn auto_detect_domain(func: &TrigFunction) -> (f64, f64) {
 }
 
 /// Løser lineært minste kvadraters problem min ||A * c - y||_2 via kolonne-skalert Householder QR.
-/// Kolonneskalering (equilibration) gjør at vilkårlig høye potenser (x^14) og inverse potenser (1/x^5)
-/// løses med full dobbelt-presisjon (~1e-15) uten over-/underflyt.
 fn solve_least_squares_qr_scaled(a: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
     let n = a.len();
     if n == 0 { return None; }
@@ -213,7 +213,7 @@ fn fit_single_candidate(
     degree: usize,
     inv_degree: usize,
     include_ln: bool,
-    include_x_ln: bool,
+    x_ln_degree: usize,
 ) -> PolyLogSimplifierResult {
     let n = x_vals.len();
 
@@ -222,6 +222,7 @@ fn fit_single_candidate(
         latex: String,
         power: Option<i32>,
         is_log: bool,
+        log_power: usize,
         eval_fn: Box<dyn Fn(f64) -> f64 + Send + Sync>,
     }
 
@@ -237,29 +238,35 @@ fn fit_single_candidate(
             latex,
             power: Some(p),
             is_log: false,
+            log_power: 0,
             eval_fn: Box::new(move |x| x.powi(p)),
         });
     }
 
-    // 2. Logaritmeledd: ln(x)
+    // 2. Logaritmeledd: ln(x) (x^0 * ln(x))
     if include_ln {
         basis.push(BasisDef {
             name: "log(x)".to_string(),
             latex: "\\ln(x)".to_string(),
             power: None,
             is_log: true,
+            log_power: 0,
             eval_fn: Box::new(|x| x.ln()),
         });
     }
 
-    // 3. Ekstra ledd: x * ln(x)
-    if include_x_ln {
+    // 3. x^n * log(x) ledd for n = 1..=x_ln_degree (x*log(x), x^2*log(x), x^3*log(x)... vilkårlig mange!)
+    for n_pow in 1..=x_ln_degree {
+        let name = if n_pow == 1 { "x*log(x)".to_string() } else { format!("x^{}*log(x)", n_pow) };
+        let latex = if n_pow == 1 { "x\\ln(x)".to_string() } else { format!("x^{{{}}}\\ln(x)", n_pow) };
+        let p = n_pow as i32;
         basis.push(BasisDef {
-            name: "x*log(x)".to_string(),
-            latex: "x\\ln(x)".to_string(),
-            power: None,
+            name,
+            latex,
+            power: Some(p),
             is_log: true,
-            eval_fn: Box::new(|x| x * x.ln()),
+            log_power: n_pow,
+            eval_fn: Box::new(move |x| x.powi(p) * x.ln()),
         });
     }
 
@@ -269,6 +276,7 @@ fn fit_single_candidate(
         latex: "1".to_string(),
         power: Some(0),
         is_log: false,
+        log_power: 0,
         eval_fn: Box::new(|_| 1.0),
     });
 
@@ -282,6 +290,7 @@ fn fit_single_candidate(
             latex,
             power: Some(p),
             is_log: false,
+            log_power: 0,
             eval_fn: Box::new(move |x| 1.0 / x.powi(k as i32)),
         });
     }
@@ -310,6 +319,7 @@ fn fit_single_candidate(
                 coeff: c,
                 power: basis[j].power,
                 is_log: basis[j].is_log,
+                log_power: basis[j].log_power,
             });
         }
     }
@@ -365,7 +375,8 @@ fn fit_single_candidate(
 }
 
 /// Forenkler et trigonometrisk uttrykk til et polynom- og logaritme-uttrykk over [a, b]
-/// med støtte for vilkårlig mange positive ledd (x^k) og inverse ledd (1/x, 1/x^2, 1/x^3...).
+/// med støtte for vilkårlig mange positive ledd (x^k), inverse ledd (1/x, 1/x^2, 1/x^3...)
+/// og polynom-logaritmeledd (x^n * log(x)).
 pub fn simplify_trig_to_poly_log(
     func: &TrigFunction,
     a: f64,
@@ -375,8 +386,8 @@ pub fn simplify_trig_to_poly_log(
     if a >= b {
         return Err("Startpunkt 'a' må være strengt mindre enn sluttpunkt 'b'.".to_string());
     }
-    if !config.auto_terms && (config.include_ln || config.max_inv_degree > 0) && a <= 0.0 {
-        return Err("For å inkludere log(x) eller inverse potenser (1/x, 1/x^2, ...) må definisjonsmengden være positiv (a > 0).".to_string());
+    if !config.auto_terms && (config.include_ln || config.max_inv_degree > 0 || config.max_x_ln_degree > 0) && a <= 0.0 {
+        return Err("For å inkludere log(x), inverse potenser (1/x, 1/x^2, ...) eller x^n*log(x) må definisjonsmengden være positiv (a > 0).".to_string());
     }
 
     let n = config.num_samples.clamp(100, 4000);
@@ -402,12 +413,12 @@ pub fn simplify_trig_to_poly_log(
             config.max_degree,
             config.max_inv_degree,
             config.include_ln,
-            config.include_x_ln,
+            config.max_x_ln_degree,
         ));
     }
 
-    // Auto-modus: Test kombinasjoner av polynomgrader opptil 14, inverse potenser (1/x..1/x^5) og logaritmer
-    // Mål: Nå R² = 1.0 (>= 0.999999) med færrest mulige ledd!
+    // Auto-modus: Test kombinasjoner av polynomgrader opptil 14, inverse potenser (1/x..1/x^5),
+    // og x^n * log(x) ledd for optimal tilpasning mot R² = 1.0!
     let mut candidates: Vec<PolyLogSimplifierResult> = Vec::new();
     let can_log = a > 0.0;
 
@@ -416,15 +427,20 @@ pub fn simplify_trig_to_poly_log(
 
     for &d_pos in &deg_candidates {
         for &d_inv in &inv_candidates {
-            // Uten log
-            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, false, false));
+            // 1. Uten log
+            candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, false, 0));
 
             if can_log {
-                // Med ln(x)
-                candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, false));
-                // Med ln(x) og x*ln(x)
+                // 2. Med ren ln(x)
+                candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, 0));
+                // 3. Med x*log(x)
                 if d_inv <= 3 {
-                    candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, true));
+                    candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, 1));
+                }
+                // 4. Med x^2*log(x) og x^3*log(x)
+                if d_inv <= 2 && d_pos <= 10 {
+                    candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, 2));
+                    candidates.push(fit_single_candidate(func, a, b, &x_vals, &y_orig, d_pos, d_inv, true, 3));
                 }
             }
         }
@@ -466,7 +482,7 @@ pub fn simplify_trig_to_poly_log(
     candidates.into_iter().next().ok_or_else(|| "Ingen gyldig modell funnet".to_string())
 }
 
-fn format_coeff(c: f64) -> String {
+pub fn format_coeff(c: f64) -> String {
     let abs_c = c.abs();
     if abs_c >= 100.0 {
         format!("{:.3}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
@@ -519,10 +535,14 @@ fn format_python_string(terms: &[PolyLogTerm]) -> String {
         let c = t.coeff;
         if t.name == "1" {
             parts.push(format_coeff(c));
-        } else if t.is_log && t.name == "log(x)" {
-            parts.push(format!("{} * np.log(x)", format_coeff(c)));
-        } else if t.is_log && t.name == "x*log(x)" {
-            parts.push(format!("{} * x * np.log(x)", format_coeff(c)));
+        } else if t.is_log {
+            if t.log_power == 0 {
+                parts.push(format!("{} * np.log(x)", format_coeff(c)));
+            } else if t.log_power == 1 {
+                parts.push(format!("{} * x * np.log(x)", format_coeff(c)));
+            } else {
+                parts.push(format!("{} * (x**{}) * np.log(x)", format_coeff(c), t.log_power));
+            }
         } else if let Some(p) = t.power {
             if p == 1 {
                 parts.push(format!("{} * x", format_coeff(c)));
@@ -590,8 +610,8 @@ mod tests {
         let config = PolyLogBasisConfig {
             max_degree: 6,
             max_inv_degree: 0,
+            max_x_ln_degree: 0,
             include_ln: true,
-            include_x_ln: false,
             num_samples: 300,
             auto_terms: false,
         };
@@ -611,8 +631,8 @@ mod tests {
         let config = PolyLogBasisConfig {
             max_degree: 2,
             max_inv_degree: 0,
+            max_x_ln_degree: 0,
             include_ln: true,
-            include_x_ln: false,
             num_samples: 200,
             auto_terms: false,
         };
@@ -629,8 +649,8 @@ mod tests {
         let config = PolyLogBasisConfig {
             max_degree: 4,
             max_inv_degree: 3, // Støtter 1/x, 1/x^2, 1/x^3
+            max_x_ln_degree: 0,
             include_ln: true,
-            include_x_ln: false,
             num_samples: 400,
             auto_terms: false,
         };
@@ -638,9 +658,27 @@ mod tests {
         let res = simplify_trig_to_poly_log(&func, 0.5, 4.0, &config).unwrap();
         assert!(res.r_squared > 0.99);
         println!("Modell med 1/x^k: {}", res.simplified_formula);
-        // Sjekk at inverse potenser støttes og formateres riktig
         let has_inv = res.terms.iter().any(|t| t.power.map(|p| p < 0).unwrap_or(false));
         assert!(has_inv, "Skal inneholde inverse ledd som 1/x, 1/x^2...");
+    }
+
+    #[test]
+    fn test_poly_log_xn_log_terms() {
+        let func = TrigFunction::parse("sin(x) + cos(2x)").unwrap();
+        let config = PolyLogBasisConfig {
+            max_degree: 6,
+            max_inv_degree: 1,
+            max_x_ln_degree: 3, // Støtter x*log(x), x^2*log(x), x^3*log(x)
+            include_ln: true,
+            num_samples: 500,
+            auto_terms: false,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, 0.5, 5.0, &config).unwrap();
+        assert!(res.r_squared > 0.98);
+        println!("Modell med x^n*log(x): {}", res.simplified_formula);
+        let has_xn_log = res.terms.iter().any(|t| t.is_log && t.log_power > 0);
+        assert!(has_xn_log, "Skal inneholde ledd som x^n*log(x)");
     }
 
     #[test]
@@ -652,7 +690,6 @@ mod tests {
         let res = simplify_trig_to_poly_log(&func, 0.1, 6.28, &config).unwrap();
         println!("Auto-forenklet formel: {} ({} ledd, R2={:.8}, RMSE={:.8})",
             res.simplified_formula, res.terms.len(), res.r_squared, res.rmse);
-        // Nøyaktigheten skal være ekstremt nær 1 (R² >= 0.99999)
         assert!(res.r_squared >= 0.99999, "R^2 må være over 0.99999, var {}", res.r_squared);
         assert!(!res.terms.is_empty());
     }
