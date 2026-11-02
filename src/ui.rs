@@ -708,6 +708,168 @@ impl ExtremaApp {
         }
     }
 
+    /// Eksporterer det aktive datasettet (eller innlest FLAC-lyd) til en tapsfri FLAC-fil
+    pub fn export_current_data_to_flac(&mut self) {
+        if self.csv_data.is_empty() {
+            self.csv_error = Some("Ingen data å eksportere".into());
+            return;
+        }
+
+        let default_name = if let Some(ref path) = self.csv_file_path {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            format!("{}_signal.flac", stem)
+        } else {
+            "datasett_lyd.flac".to_string()
+        };
+
+        if let Some(target_path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("FLAC-lydfil (*.flac)", &["flac"])
+            .save_file()
+        {
+            let sample_rate = self.flac_meta.as_ref().map(|m| m.sample_rate).unwrap_or(16000);
+            match crate::flac_loader::export_points_to_flac(&self.csv_data, &target_path, sample_rate) {
+                Ok(()) => {
+                    self.csv_status = Some(format!(
+                        "Eksporterte {} datapunkter til FLAC ({} Hz): {}",
+                        self.csv_data.len(),
+                        sample_rate,
+                        target_path.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+                Err(e) => {
+                    self.csv_error = Some(format!("Feil ved lagring av FLAC: {}", e));
+                }
+            }
+        }
+    }
+
+    /// Eksporterer et valgt sub-område til en separat FLAC-fil
+    pub fn export_sub_range_to_flac(&mut self) {
+        if self.csv_data.is_empty() {
+            self.csv_error = Some("Ingen data å eksportere".into());
+            return;
+        }
+
+        let filtered: Vec<DataPoint> = self.csv_data
+            .iter()
+            .filter(|p| p.x >= self.sub_range_min_x && p.x <= self.sub_range_max_x)
+            .cloned()
+            .collect();
+
+        if filtered.is_empty() {
+            self.csv_error = Some("Ingen datapunkter i det valgte sub-området".into());
+            return;
+        }
+
+        let default_name = if let Some(ref path) = self.csv_file_path {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            format!("{}_sub_omraade.flac", stem)
+        } else {
+            "sub_omraade.flac".to_string()
+        };
+
+        if let Some(target_path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("FLAC-lydfil (*.flac)", &["flac"])
+            .save_file()
+        {
+            let sample_rate = self.flac_meta.as_ref().map(|m| m.sample_rate).unwrap_or(16000);
+            match crate::flac_loader::export_points_to_flac(&filtered, &target_path, sample_rate) {
+                Ok(()) => {
+                    self.csv_status = Some(format!(
+                        "Eksporterte {} sub-områdepunkter til FLAC ({} Hz): {}",
+                        filtered.len(),
+                        sample_rate,
+                        target_path.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+                Err(e) => {
+                    self.csv_error = Some(format!("Feil ved lagring av sub-område til FLAC: {}", e));
+                }
+            }
+        }
+    }
+
+    /// Eksporterer den tilpassede modellen f(x) (resultatet) til en tapsfri FLAC-fil
+    pub fn export_reconstructed_result_to_flac(&mut self, synthesize_full_2s: bool) {
+        let Some(res) = &self.csv_result else {
+            self.csv_error = Some("Ingen analysert modell å eksportere til FLAC".into());
+            return;
+        };
+
+        let default_name = if let Some(ref path) = self.csv_file_path {
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            if synthesize_full_2s {
+                format!("{}_syntese_2s.flac", stem)
+            } else {
+                format!("{}_rekonstruert.flac", stem)
+            }
+        } else if synthesize_full_2s {
+            "syntese_modell_2s.flac".to_string()
+        } else {
+            "rekonstruert_modell.flac".to_string()
+        };
+
+        if let Some(target_path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("FLAC-lydfil (*.flac)", &["flac"])
+            .save_file()
+        {
+            let sample_rate = self.flac_meta.as_ref().map(|m| m.sample_rate).unwrap_or(16000);
+
+            let (points_to_export, is_sub) = if self.sub_range_enabled && self.sub_range_max_x > self.sub_range_min_x {
+                let filtered: Vec<DataPoint> = self.csv_data
+                    .iter()
+                    .filter(|p| p.x >= self.sub_range_min_x && p.x <= self.sub_range_max_x)
+                    .cloned()
+                    .collect();
+                (filtered, true)
+            } else {
+                (self.csv_data.clone(), false)
+            };
+
+            let save_res = if synthesize_full_2s || points_to_export.is_empty() {
+                crate::flac_loader::export_function_to_flac(
+                    &res.best_match.function,
+                    &target_path,
+                    sample_rate,
+                    2.0,
+                    self.flac_options.time_as_hz_radians,
+                )
+            } else {
+                crate::flac_loader::export_reconstructed_to_flac(
+                    &points_to_export,
+                    &res.best_match.function,
+                    &target_path,
+                    sample_rate,
+                )
+            };
+
+            match save_res {
+                Ok(()) => {
+                    let desc = if synthesize_full_2s {
+                        "Syntetiserte 2.0s ren lyd fra modell"
+                    } else if is_sub {
+                        "Eksporterte rekonstruert modell (sub-område)"
+                    } else {
+                        "Eksporterte rekonstruert modell"
+                    };
+                    self.csv_status = Some(format!(
+                        "{} til FLAC ({} Hz, R²={:.4}): {}",
+                        desc,
+                        sample_rate,
+                        res.best_match.r_squared,
+                        target_path.file_name().unwrap_or_default().to_string_lossy()
+                    ));
+                }
+                Err(e) => {
+                    self.csv_error = Some(format!("Feil ved lagring av rekonstruert FLAC: {}", e));
+                }
+            }
+        }
+    }
+
     /// Kjører formel-identifikasjon på lastet CSV-data
     pub fn analyze_loaded_csv(&mut self) {
         self.csv_error = None;
@@ -1169,6 +1331,14 @@ impl ExtremaApp {
                         {
                             self.export_current_data_to_csv();
                         }
+
+                        if ui
+                            .button(RichText::new("🎵 Lagre som FLAC...").strong().size(12.0))
+                            .on_hover_text("Eksporter det aktive lydsignalet / datasettet til en tapsfri FLAC-fil")
+                            .clicked()
+                        {
+                            self.export_current_data_to_flac();
+                        }
                     }
 
                     if let Some(path) = &self.csv_file_path {
@@ -1317,6 +1487,20 @@ impl ExtremaApp {
                             transfer_to_classifier = Some(res.best_match.function.format_expr());
                         }
 
+                        if ui.button(RichText::new("🎵 Lagre resultat som FLAC...").strong().size(11.5).color(theme.text_accent))
+                            .on_hover_text("Eksporter den rekonstruerte formelen f(x) evaluert over datasettet som en tapsfri FLAC-lydfil")
+                            .clicked()
+                        {
+                            self.export_reconstructed_result_to_flac(false);
+                        }
+
+                        if ui.button(RichText::new("🎵 Syntetiser 2s FLAC...").size(11.5))
+                            .on_hover_text("Syntetiser 2.0 sekunder uavbrutt lyd fra den tilpassede modellen f(x) og lagre som FLAC")
+                            .clicked()
+                        {
+                            self.export_reconstructed_result_to_flac(true);
+                        }
+
                         if ui.button(RichText::new("📋 Kopier").size(11.5))
                             .on_hover_text("Kopier hele f(x)-uttrykket til utklippstavlen")
                             .clicked()
@@ -1449,6 +1633,14 @@ impl ExtremaApp {
                     .clicked()
                 {
                     need_export_sub = true;
+                }
+
+                if ui
+                    .button("🎵 Lagre sub-område (FLAC)...")
+                    .on_hover_text("Eksporter kun punktene i det markerte sub-området til en tapsfri FLAC-fil")
+                    .clicked()
+                {
+                    self.export_sub_range_to_flac();
                 }
             });
 
@@ -2680,41 +2872,45 @@ impl ExtremaApp {
                     } else {
                         ui.label(RichText::new("(Optimal grad opptil x¹⁴, 1/xᵏ, xⁿ·log(x) og basis tilpasses automatisk mot R² = 1.0)").italics().color(theme.text_secondary).size(11.5));
                     }
+                });
 
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button(RichText::new("⚡ Beregn Polynom & Log").strong().color(theme.text_success).size(12.5)).clicked() {
-                            match crate::model::TrigFunction::parse(&self.poly_log_input) {
-                                Ok(func) => {
-                                    if self.poly_log_auto_ab {
-                                        let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&func);
-                                        self.poly_log_a = da;
-                                        self.poly_log_b = db;
-                                    }
-                                    let config = crate::poly_log_simplifier::PolyLogBasisConfig {
-                                        max_degree: self.poly_log_degree,
-                                        max_inv_degree: self.poly_log_inv_degree,
-                                        max_x_ln_degree: self.poly_log_x_ln_degree,
-                                        include_ln: self.poly_log_include_ln,
-                                        num_samples: 800,
-                                        auto_terms: self.poly_log_auto_terms,
-                                        term_by_term: self.poly_log_term_by_term,
-                                    };
-                                    match crate::poly_log_simplifier::simplify_trig_to_poly_log(&func, self.poly_log_a, self.poly_log_b, &config) {
-                                        Ok(res) => {
-                                            self.poly_log_result = Some(res);
-                                            self.poly_log_error = None;
-                                        }
-                                        Err(err) => {
-                                            self.poly_log_error = Some(err);
-                                        }
-                                    }
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    if ui.button(RichText::new("⚡ Beregn Polynom & Log").strong().color(theme.text_success).size(13.0))
+                        .on_hover_text("Start tilnærming av den trigonometriske formelen til polynom- og log-rekke")
+                        .clicked()
+                    {
+                        match crate::model::TrigFunction::parse(&self.poly_log_input) {
+                            Ok(func) => {
+                                if self.poly_log_auto_ab {
+                                    let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&func);
+                                    self.poly_log_a = da;
+                                    self.poly_log_b = db;
                                 }
-                                Err(err) => {
-                                    self.poly_log_error = Some(format!("Ugyldig trigonometrisk uttrykk: {}. MERK: KUN sin og cos støttes!", err));
+                                let config = crate::poly_log_simplifier::PolyLogBasisConfig {
+                                    max_degree: self.poly_log_degree,
+                                    max_inv_degree: self.poly_log_inv_degree,
+                                    max_x_ln_degree: self.poly_log_x_ln_degree,
+                                    include_ln: self.poly_log_include_ln,
+                                    num_samples: 800,
+                                    auto_terms: self.poly_log_auto_terms,
+                                    term_by_term: self.poly_log_term_by_term,
+                                };
+                                match crate::poly_log_simplifier::simplify_trig_to_poly_log(&func, self.poly_log_a, self.poly_log_b, &config) {
+                                    Ok(res) => {
+                                        self.poly_log_result = Some(res);
+                                        self.poly_log_error = None;
+                                    }
+                                    Err(err) => {
+                                        self.poly_log_error = Some(err);
+                                    }
                                 }
                             }
+                            Err(err) => {
+                                self.poly_log_error = Some(format!("Ugyldig trigonometrisk uttrykk: {}. MERK: KUN sin og cos støttes!", err));
+                            }
                         }
-                    });
+                    }
                 });
             });
 

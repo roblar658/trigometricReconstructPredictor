@@ -174,6 +174,110 @@ pub fn export_flac_to_csv<P: AsRef<Path>>(
     Ok(())
 }
 
+/// Skriver en sekvens med normaliserte lydprøver (-1.0 til 1.0) til en tapsfri FLAC-fil.
+pub fn write_flac_samples<P: AsRef<Path>>(
+    samples: &[f64],
+    path: P,
+    sample_rate: u32,
+) -> Result<(), String> {
+    use flacenc::component::BitRepr;
+    use flacenc::error::Verify;
+    use flacenc::source::MemSource;
+
+    if samples.is_empty() {
+        return Err("Ingen lydprøver å skrive til FLAC-fil".into());
+    }
+
+    let pcm_samples: Vec<i32> = samples
+        .iter()
+        .map(|&s| {
+            let clamped = s.clamp(-1.0, 1.0);
+            (clamped * 32767.0).round() as i32
+        })
+        .collect();
+
+    let channels = 1;
+    let bits_per_sample = 16;
+    let block_size = 4096.min(pcm_samples.len().max(16));
+
+    let mut enc_config = flacenc::config::Encoder::default();
+    enc_config.block_size = block_size;
+
+    let config = enc_config
+        .into_verified()
+        .map_err(|e| format!("Ugyldig FLAC-konfigurasjon: {:?}", e))?;
+
+    let src = MemSource::from_samples(&pcm_samples, channels, bits_per_sample, sample_rate as usize);
+
+    let flac_stream = flacenc::encode_with_fixed_block_size(
+        &config,
+        src,
+        block_size,
+    )
+    .map_err(|e| format!("Feil under FLAC-enkoding: {:?}", e))?;
+
+    let mut sink = flacenc::bitsink::ByteSink::new();
+    flac_stream
+        .write(&mut sink)
+        .map_err(|e| format!("Feil under skriving av FLAC-data: {:?}", e))?;
+
+    std::fs::write(path.as_ref(), sink.as_slice())
+        .map_err(|e| format!("Kunne ikke lagre FLAC-fil: {}", e))?;
+
+    Ok(())
+}
+
+/// Eksporterer en sekvens med datapunkter (f.eks. måledata) til en tapsfri FLAC-fil.
+pub fn export_points_to_flac<P: AsRef<Path>>(
+    points: &[DataPoint],
+    path: P,
+    sample_rate: u32,
+) -> Result<(), String> {
+    if points.is_empty() {
+        return Err("Ingen datapunkter å eksportere til FLAC".into());
+    }
+    let samples: Vec<f64> = points.iter().map(|p| p.y).collect();
+    write_flac_samples(&samples, path, sample_rate)
+}
+
+/// Eksporterer det tilpassede resultatet fra formelgjenkjenningen f(x) evaluert over datapunktene til en tapsfri FLAC-fil.
+pub fn export_reconstructed_to_flac<P: AsRef<Path>>(
+    points: &[DataPoint],
+    func: &crate::model::TrigFunction,
+    path: P,
+    sample_rate: u32,
+) -> Result<(), String> {
+    if points.is_empty() {
+        return Err("Ingen datapunkter å rekonstruere til FLAC".into());
+    }
+    let samples: Vec<f64> = points.iter().map(|p| func.eval(p.x)).collect();
+    write_flac_samples(&samples, path, sample_rate)
+}
+
+/// Syntetiserer en trigonometrisk funksjon f(x) for en gitt varighet (sekunder) og skriver til en tapsfri FLAC-fil.
+pub fn export_function_to_flac<P: AsRef<Path>>(
+    func: &crate::model::TrigFunction,
+    path: P,
+    sample_rate: u32,
+    duration_seconds: f64,
+    time_as_hz_radians: bool,
+) -> Result<(), String> {
+    let dur = duration_seconds.max(0.01);
+    let n_samples = (dur * sample_rate as f64).round() as usize;
+    if n_samples == 0 {
+        return Err("Ugyldig varighet for FLAC-syntese".into());
+    }
+
+    let mut samples = Vec::with_capacity(n_samples);
+    for i in 0..n_samples {
+        let t = i as f64 / sample_rate as f64;
+        let x = if time_as_hz_radians { t * TAU } else { t };
+        samples.push(func.eval(x));
+    }
+
+    write_flac_samples(&samples, path, sample_rate)
+}
+
 /// Søker gjennom FLAC-filen og finner første tidspunkt (i sekunder) der lydamplituden overstiger en gitt terskel (f.eks. 0.03)
 pub fn find_first_active_second<P: AsRef<Path>>(path: P, threshold: f64) -> Option<f64> {
     let mut reader = FlacReader::open(path.as_ref()).ok()?;
@@ -308,6 +412,46 @@ mod tests {
                 freqs
             );
         }
+    }
+
+    #[test]
+    fn test_write_and_read_flac_roundtrip() {
+        let sample_rate = 16000;
+        let n_samples = 800; // 0.05 sekunder
+        let mut original_samples = Vec::with_capacity(n_samples);
+        for i in 0..n_samples {
+            let t = i as f64 / sample_rate as f64;
+            // 440 Hz tone med amplitude 0.75
+            let y = 0.75 * (2.0 * std::f64::consts::PI * 440.0 * t).sin();
+            original_samples.push(y);
+        }
+
+        let tmp_path = "test_roundtrip.flac";
+        write_flac_samples(&original_samples, tmp_path, sample_rate).expect("write_flac_samples feilet");
+        assert!(Path::new(tmp_path).exists());
+
+        // Les tilbake med claxon
+        let opts = FlacExtractionOptions {
+            max_points: n_samples,
+            start_seconds: 0.0,
+            duration_seconds: None,
+            time_as_hz_radians: false,
+        };
+
+        let (meta, pts) = read_flac_data(tmp_path, &opts).expect("read_flac_data feilet");
+        assert_eq!(meta.sample_rate, sample_rate);
+        assert_eq!(meta.channels, 1);
+        assert_eq!(meta.bits_per_sample, 16);
+        assert_eq!(pts.len(), n_samples);
+
+        // Verifiser at prøvene er nøyaktige innenfor 16-bit kvantiseringsfeil (< 0.0001)
+        for (i, p) in pts.iter().enumerate() {
+            let orig = original_samples[i];
+            let diff = (p.y - orig).abs();
+            assert!(diff < 0.0001, "Sample {} avviker: orig={}, read={}, diff={}", i, orig, p.y, diff);
+        }
+
+        let _ = std::fs::remove_file(tmp_path);
     }
 }
 
