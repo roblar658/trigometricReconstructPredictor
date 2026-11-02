@@ -14,6 +14,7 @@ Systemet består av to integrerte moduler:
 
 ## Bilder
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/7e2d94a6-65a3-44d2-ade0-a65a39735632" />
+<img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/1b115b82-8527-40a6-a2d8-938b7e38cf4d" />
 <img width="1920" height="1200" alt="image" src="https://github.com/user-attachments/assets/8f7f95dc-9481-4e78-a029-d5cc12a1b843" />
 
 <img width="959" height="599" alt="image" src="https://github.com/user-attachments/assets/ed0701e3-d8ac-4a6e-8e12-467fe0078da9" />
