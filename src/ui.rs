@@ -2465,6 +2465,13 @@ impl ExtremaApp {
                     if edit.changed() {
                         self.poly_log_result = None;
                         self.poly_log_error = None;
+                        if self.poly_log_auto_ab {
+                            if let Ok(func) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&func);
+                                self.poly_log_a = da;
+                                self.poly_log_b = db;
+                            }
+                        }
                     }
 
                     if ui.button(RichText::new("📋 Hent fra analyse").size(11.5)).on_hover_text("Bruk den nåværende formelen fra trigonometrisk analyse").clicked() {
@@ -2567,6 +2574,18 @@ impl ExtremaApp {
                         self.poly_log_term_by_term = true;
                         self.poly_log_result = None;
                     }
+                    if ui.small_button("sin(8000x) (8000 ledd)").clicked() {
+                        self.poly_log_input = "sin(8000x)".to_string();
+                        self.poly_log_degree = 8000;
+                        self.poly_log_term_by_term = true;
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
+                        self.poly_log_result = None;
+                    }
                 });
 
                 ui.separator();
@@ -2574,9 +2593,9 @@ impl ExtremaApp {
                 // Innstillinger for basis-funksjoner og intervall
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Definisjonsområde [a, b]:").strong().color(theme.text_secondary).size(12.0));
-                    let d_a = ui.add(egui::DragValue::new(&mut self.poly_log_a).speed(0.05).range(0.01..=100.0).prefix("a: "))
+                    let d_a = ui.add(egui::DragValue::new(&mut self.poly_log_a).speed(0.001).range(0.00001..=100.0).prefix("a: "))
                         .on_hover_text("Startverdi (må være > 0 for at log(x) skal være definert)");
-                    let d_b = ui.add(egui::DragValue::new(&mut self.poly_log_b).speed(0.05).range(0.05..=100.0).prefix("b: "))
+                    let d_b = ui.add(egui::DragValue::new(&mut self.poly_log_b).speed(0.001).range(0.00005..=100.0).prefix("b: "))
                         .on_hover_text("Sluttverdi for tilnærmingen");
                     if d_a.changed() || d_b.changed() {
                         self.poly_log_auto_ab = false;
@@ -2616,8 +2635,8 @@ impl ExtremaApp {
                     if !self.poly_log_auto_terms {
                         ui.separator();
                         ui.label(RichText::new("Maks polynomgrad (xᵏ):").strong().color(theme.text_secondary).size(12.0));
-                        ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=300).speed(1.0))
-                            .on_hover_text("Høyeste positive x-potens (f.eks. 14 for x¹⁴, eller > 130 for sin(130x)). Støtter vilkårlig mange ledd!");
+                        ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=10000).speed(10.0))
+                            .on_hover_text("Høyeste positive x-potens (støtter minst 8000 ledd, f.eks. opptil 10 000 ledd!).");
 
                         ui.separator();
                         ui.label(RichText::new("Maks inversgrad (1/xᵏ):").strong().color(theme.text_secondary).size(12.0));
@@ -2789,23 +2808,27 @@ impl ExtremaApp {
                     // Høyde for maks 7 rader pluss overskriftsrad
                     let scroll_max_h = (row_height * 7.5) + 26.0;
 
+                    let total_terms = res.terms.len();
                     egui::ScrollArea::vertical()
                         .id_salt("poly_log_terms_rullegardin_scroll")
                         .max_height(scroll_max_h)
                         .auto_shrink([false, true])
-                        .show(ui, |ui| {
+                        .show_rows(ui, row_height, total_terms, |ui, row_range| {
                             egui::Grid::new("poly_log_terms_grid")
                                 .striped(true)
                                 .min_col_width(120.0)
                                 .spacing([12.0, 5.0])
                                 .show(ui, |ui| {
-                                    ui.label(RichText::new("Ledd").strong().color(theme.text_accent));
-                                    ui.label(RichText::new("Type").strong().color(theme.text_accent));
-                                    ui.label(RichText::new("Koeffisient").strong().color(theme.text_accent));
-                                    ui.label(RichText::new("Matematisk representasjon").strong().color(theme.text_accent));
-                                    ui.end_row();
+                                    if row_range.start == 0 {
+                                        ui.label(RichText::new("Ledd").strong().color(theme.text_accent));
+                                        ui.label(RichText::new("Type").strong().color(theme.text_accent));
+                                        ui.label(RichText::new("Koeffisient").strong().color(theme.text_accent));
+                                        ui.label(RichText::new("Matematisk representasjon").strong().color(theme.text_accent));
+                                        ui.end_row();
+                                    }
 
-                                    for t in &res.terms {
+                                    for idx in row_range {
+                                        let t = &res.terms[idx];
                                         ui.label(RichText::new(&t.name).monospace().strong());
                                         let kind = if t.is_log {
                                             if t.log_power == 0 { "Logaritme (ln)" } else { "Polynom-log (xⁿ·ln)" }

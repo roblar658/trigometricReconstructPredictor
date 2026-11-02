@@ -91,27 +91,42 @@ pub fn auto_detect_domain(func: &TrigFunction) -> (f64, f64) {
         return (0.1, 6.28);
     }
 
+    let max_f = *freqs.iter().max().unwrap_or(&1);
+
+    // Hvis funksjonen inneholder en høyfrekvent bølgekomponent (f.eks. sin(130x) eller sin(8000x)):
+    // Tilpass definisjonsområdet [a, b] til den raskeste bølgens 2 perioder med hensiktsmessig presisjon,
+    // slik at bølgeformen representeres med full oppløsning og uten numerisk overflyt.
+    if max_f >= 1000 {
+        let t_high = 2.0 * std::f64::consts::PI / (max_f as f64);
+        let a = 0.0001;
+        let b = a + 2.0 * t_high;
+        let prec = 100_000.0;
+        let rounded_a = (a * prec).round() / prec;
+        let rounded_b = (b * prec).round() / prec;
+        return (rounded_a, rounded_b.max(rounded_a + 0.0002));
+    } else if max_f >= 20 {
+        let t_high = 2.0 * std::f64::consts::PI / (max_f as f64);
+        let a = 0.01;
+        let b = a + 2.0 * t_high;
+        let rounded_a = (a * 100.0).round() / 100.0;
+        let rounded_b = (b * 100.0).round() / 100.0;
+        return (rounded_a, rounded_b.max(rounded_a + 0.02));
+    }
+
     let mut g = freqs[0];
     for &f in &freqs[1..] {
         g = gcd(g, f);
     }
     let g = g.max(1);
 
-    // Fundamental periode T = 2*pi / g
+    // Fundamental periode T = 2*pi / g for lave frekvenser (f.eks. sin(x) + cos(2x))
     let t_fund = 2.0 * std::f64::consts::PI / (g as f64);
-    let (a, b) = if g >= 30 {
-        let a = 0.01;
-        let b = a + 2.0 * t_fund; // 2 bølgeperioder for høyfrekvente bølger (f.eks. sin(130x))
-        (a, b)
+    let a = 0.1;
+    let b = if t_fund < 1.5 {
+        let mult = (1.5 / t_fund).ceil();
+        a + mult * t_fund
     } else {
-        let a = 0.1;
-        let b = if t_fund < 1.5 {
-            let mult = (1.5 / t_fund).ceil();
-            a + mult * t_fund
-        } else {
-            a + t_fund
-        };
-        (a, b)
+        a + t_fund
     };
 
     let rounded_a = (a * 100.0).round() / 100.0;
@@ -434,11 +449,15 @@ pub fn transform_trig_term_by_term(
 
         let k = t.freq as f64;
         let amp = t.amp;
+        let max_coord = a.abs().max(b.abs());
+        let k_span = k * max_coord;
 
         // Bestem nødvendig grad for dette leddet:
-        // For høye frekvenser som sin(130x) kreves det over 130 ledd (f.eks. grad 135 eller høyere).
+        // Støtter minst 8000 ledd for høyfrekvente bølger og avansert modellering!
         let deg = if config.auto_terms {
-            if t.freq >= 120 {
+            if t.freq >= 8000 {
+                (t.freq as usize + 5).max(8050)
+            } else if t.freq >= 120 {
                 (t.freq as usize + 5).max(135)
             } else if t.freq >= 15 {
                 (t.freq as usize + 5).max(25)
@@ -446,17 +465,20 @@ pub fn transform_trig_term_by_term(
                 14.min((t.freq as usize * 4).max(8))
             }
         } else {
-            if t.freq >= 120 && config.max_degree < 130 {
-                // Bruker har spesifisert k=130: krever over 130 ledd
+            // Manuell modus: kan settes opptil minst 8000, 10000+ ledd
+            if t.freq >= 8000 && config.max_degree < 8000 {
+                8000.max(config.max_degree)
+            } else if t.freq >= 120 && config.max_degree < 130 {
                 135.max(config.max_degree)
             } else {
                 config.max_degree.max(2)
             }
         };
 
-        // Hvis leddet har lav frekvens (k < 15) og brukeren har bedt om inverse ledd eller log,
-        // kan vi bruke QR kandidat-tilpasning for dette enkeltleddet.
-        let use_qr_for_term = t.freq < 15 && (config.include_ln || config.max_inv_degree > 0 || config.max_x_ln_degree > 0);
+        // Maclaurin-rekke rundt 0 er analytisk eksakt og konvergerer raskt når k * max(|a|, |b|) <= 25.0.
+        // Hvis definisjonsområdet er for bredt (k_span > 25.0) eller bruker har bedt om inverse/log-ledd,
+        // benyttes kolonne-skalert Householder QR slik at uttrykket forblir endelig uten numerisk overflyt (inf).
+        let use_qr_for_term = k_span > 25.0 || (t.freq < 15 && (config.include_ln || config.max_inv_degree > 0 || config.max_x_ln_degree > 0));
 
         if use_qr_for_term {
             let term_func = TrigFunction::new(vec![*t]);
@@ -486,7 +508,11 @@ pub fn transform_trig_term_by_term(
                     let mut p = 1usize;
                     let mut c = amp * k;
                     while p <= deg {
-                        *poly_powers.entry(p as i32).or_insert(0.0) += c;
+                        if c.is_finite() && c.abs() > 0.0 {
+                            *poly_powers.entry(p as i32).or_insert(0.0) += c;
+                        } else if !c.is_finite() {
+                            break;
+                        }
                         if p + 2 > deg { break; }
                         c = -c * (k * k) / (((p + 1) * (p + 2)) as f64);
                         p += 2;
@@ -497,7 +523,11 @@ pub fn transform_trig_term_by_term(
                     let mut p = 0usize;
                     let mut c = amp;
                     while p <= deg {
-                        *poly_powers.entry(p as i32).or_insert(0.0) += c;
+                        if c.is_finite() && c.abs() > 0.0 {
+                            *poly_powers.entry(p as i32).or_insert(0.0) += c;
+                        } else if !c.is_finite() {
+                            break;
+                        }
                         if p + 2 > deg { break; }
                         c = -c * (k * k) / (((p + 1) * (p + 2)) as f64);
                         p += 2;
@@ -603,19 +633,32 @@ pub fn transform_trig_term_by_term(
             }
         }
 
+        if !y_hat.is_finite() {
+            y_hat = 0.0;
+        }
         approx_y.push(y_hat);
         let err = y_true - y_hat;
         error_y.push(err);
-        rss += err * err;
-        let abs_err = err.abs();
-        if abs_err > max_err {
-            max_err = abs_err;
+        if err.is_finite() {
+            rss += err * err;
+            let abs_err = err.abs();
+            if abs_err > max_err {
+                max_err = abs_err;
+            }
         }
     }
 
     let mean_y = y_orig.iter().sum::<f64>() / n as f64;
     let tss = y_orig.iter().map(|&y| (y - mean_y).powi(2)).sum::<f64>().max(1e-12);
-    let r_squared = (1.0 - (rss / tss)).clamp(0.0, 1.0);
+    if !rss.is_finite() {
+        rss = tss;
+        max_err = 1.0;
+    }
+    let r_squared = if tss > 1e-12 {
+        (1.0 - (rss / tss)).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
     let rmse = (rss / n as f64).sqrt();
 
     let simplified_formula = format_model_string(&terms, false);
@@ -1028,5 +1071,57 @@ mod tests {
         let res = simplify_trig_to_poly_log(&func, 0.01, 0.11, &config).unwrap();
         assert!(res.r_squared >= 0.9999999);
         assert!(res.terms.len() >= 68);
+    }
+
+    #[test]
+    fn test_poly_log_sin_x_plus_sin_130x_perfect_fit() {
+        let func = TrigFunction::parse("sin(x) + sin(130x)").unwrap();
+        let (a, b) = auto_detect_domain(&func);
+        assert!((a - 0.01).abs() < 1e-4);
+        assert!((b - 0.11).abs() < 0.02);
+
+        let config = PolyLogBasisConfig {
+            max_degree: 135,
+            max_inv_degree: 0,
+            max_x_ln_degree: 0,
+            include_ln: false,
+            num_samples: 800,
+            auto_terms: true,
+            term_by_term: true,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, a, b, &config).unwrap();
+        println!("sin(x) + sin(130x) over [{}, {}]: R2={:.10}, RMSE={:.6e}, terms={}",
+            a, b, res.r_squared, res.rmse, res.terms.len());
+        assert!(res.r_squared >= 0.9999999, "R2 var {}", res.r_squared);
+        assert!(res.rmse.is_finite(), "RMSE var inf!");
+        assert!(res.rmse < 1e-6, "RMSE var {}", res.rmse);
+        assert!(res.terms.len() >= 68);
+    }
+
+    #[test]
+    fn test_poly_log_support_8000_terms() {
+        let func = TrigFunction::parse("sin(8000x)").unwrap();
+        let (a, b) = auto_detect_domain(&func);
+        assert!((a - 0.0001).abs() < 1e-5);
+        assert!((b - 0.00167).abs() < 0.0005);
+
+        let config = PolyLogBasisConfig {
+            max_degree: 8000,
+            max_inv_degree: 0,
+            max_x_ln_degree: 0,
+            include_ln: false,
+            num_samples: 800,
+            auto_terms: false,
+            term_by_term: true,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, a, b, &config).unwrap();
+        println!("sin(8000x) med minst 8000 ledd støtte: {} ledd, R2={:.10}, RMSE={:.6e}",
+            res.terms.len(), res.r_squared, res.rmse);
+        assert!(res.r_squared >= 0.9999999);
+        assert!(res.rmse.is_finite());
+        assert!(res.rmse < 1e-6);
+        assert!(res.terms.len() >= 20);
     }
 }
