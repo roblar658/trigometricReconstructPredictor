@@ -453,9 +453,11 @@ pub fn transform_trig_term_by_term(
         let k_span = k * max_coord;
 
         // Bestem nødvendig grad for dette leddet:
-        // Støtter minst 8000 ledd for høyfrekvente bølger og avansert modellering!
+        // Støtter minst 16 000 ledd for høyfrekvente bølger og avansert modellering!
         let deg = if config.auto_terms {
-            if t.freq >= 8000 {
+            if t.freq >= 16000 {
+                (t.freq as usize + 5).max(16050)
+            } else if t.freq >= 8000 {
                 (t.freq as usize + 5).max(8050)
             } else if t.freq >= 120 {
                 (t.freq as usize + 5).max(135)
@@ -465,8 +467,10 @@ pub fn transform_trig_term_by_term(
                 14.min((t.freq as usize * 4).max(8))
             }
         } else {
-            // Manuell modus: kan settes opptil minst 8000, 10000+ ledd
-            if t.freq >= 8000 && config.max_degree < 8000 {
+            // Manuell modus: kan settes opptil minst 16 000, 20 000+ ledd
+            if t.freq >= 16000 && config.max_degree < 16000 {
+                16000.max(config.max_degree)
+            } else if t.freq >= 8000 && config.max_degree < 8000 {
                 8000.max(config.max_degree)
             } else if t.freq >= 120 && config.max_degree < 130 {
                 135.max(config.max_degree)
@@ -1118,6 +1122,32 @@ mod tests {
 
         let res = simplify_trig_to_poly_log(&func, a, b, &config).unwrap();
         println!("sin(8000x) med minst 8000 ledd støtte: {} ledd, R2={:.10}, RMSE={:.6e}",
+            res.terms.len(), res.r_squared, res.rmse);
+        assert!(res.r_squared >= 0.9999999);
+        assert!(res.rmse.is_finite());
+        assert!(res.rmse < 1e-6);
+        assert!(res.terms.len() >= 20);
+    }
+
+    #[test]
+    fn test_poly_log_support_16000_terms() {
+        let func = TrigFunction::parse("sin(16000x)").unwrap();
+        let (a, b) = auto_detect_domain(&func);
+        assert!((a - 0.0001).abs() < 1e-5);
+        assert!((b - 0.00088).abs() < 0.0005);
+
+        let config = PolyLogBasisConfig {
+            max_degree: 16000,
+            max_inv_degree: 0,
+            max_x_ln_degree: 0,
+            include_ln: false,
+            num_samples: 800,
+            auto_terms: false,
+            term_by_term: true,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, a, b, &config).unwrap();
+        println!("sin(16000x) med minst 16000 ledd støtte: {} ledd, R2={:.10}, RMSE={:.6e}",
             res.terms.len(), res.r_squared, res.rmse);
         assert!(res.r_squared >= 0.9999999);
         assert!(res.rmse.is_finite());

@@ -458,7 +458,7 @@ pub fn identify_function_from_data(
     // -------------------------------------------------------------
     if effective_max_n >= 2 && max_spectral_power > 1e-9 {
         let min_search_f0 = if effective_max_n >= 200 { 15u32 } else { 1u32 };
-        let max_search_f0 = 800u32.min(effective_max_n / 2).max(min_search_f0);
+        let max_search_f0 = 1600u32.min(effective_max_n / 2).max(min_search_f0);
         let mut best_f0 = min_search_f0;
         let mut best_f0_score = -1.0f64;
 
@@ -525,9 +525,9 @@ pub fn identify_function_from_data(
             let p_thresh = (max_spectral_power * 1e-5).max(1e-10);
             let mut harm_terms: Vec<(TrigKind, u32)> = Vec::new();
             let mut h = 1;
-            // Utvid harmoniske frekvenser opp til fysisk Nyquist (inntil 8000 Hz) for å fange dype spisser helt opp til R² ~ 1
+            // Utvid harmoniske frekvenser opp til fysisk Nyquist (inntil 16 000 Hz) for å fange dype spisser helt opp til R² ~ 1
             let harmonic_upper_limit = nyquist_k.max(effective_max_n);
-            while h * best_f0 <= harmonic_upper_limit && harm_terms.len() < 250 {
+            while h * best_f0 <= harmonic_upper_limit && harm_terms.len() < 500 {
                 let f = h * best_f0;
                 let idx = (f - 1) as usize;
                 let has_energy = if idx < spectrum.len() {

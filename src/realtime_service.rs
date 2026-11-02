@@ -51,7 +51,7 @@ pub struct OnlineTrigFitter {
     pub max_k: usize,
     pub dim: usize,
     pub gram: Vec<f64>, // Flatt 2D array: dim x dim (brukes for max_k <= 128)
-    pub diag: Vec<f64>, // Dimensjon: dim (alltid allokert for skalering opp til 8000)
+    pub diag: Vec<f64>, // Dimensjon: dim (alltid allokert for skalering opp til 16000)
     pub rhs_b: Vec<f64>, // Dimensjon: dim
     pub count: usize,
     pub sum_y: f64,
@@ -66,12 +66,12 @@ pub struct OnlineTrigFitter {
 
 impl OnlineTrigFitter {
     pub fn new(max_k: usize) -> Self {
-        let max_k = max_k.clamp(4, 8000);
+        let max_k = max_k.clamp(4, 16000);
         let dim = 2 * max_k;
         let gram = if max_k <= 128 {
             vec![0.0; dim * dim]
         } else {
-            Vec::new() // Skånsom minnebruk for k opp til 8000 (ikke 2 GB!)
+            Vec::new() // Skånsom minnebruk for k opp til 16000 (ikke 2 GB!)
         };
         Self {
             max_k,
@@ -152,7 +152,7 @@ impl OnlineTrigFitter {
                 }
             }
         } else {
-            // Skalerbar O(k) oppdatering for stor k (inntil 8000)
+            // Skalerbar O(k) oppdatering for stor k (inntil 16000)
             for k in 1..=self.max_k {
                 let angle = (k as f64) * x;
                 let s = angle.sin();
@@ -303,7 +303,7 @@ impl OnlineTrigFitter {
         }
 
         if self.gram.is_empty() {
-            // For stor k (inntil 8000): Beregn delsystemets Gram-matrise on-demand fra nylige punkter
+            // For stor k (inntil 16000): Beregn delsystemets Gram-matrise on-demand fra nylige punkter
             let pts_count = self.recent_points.len();
             if pts_count > 0 {
                 let scale = (self.count as f64) / (pts_count as f64);
@@ -1466,5 +1466,30 @@ mod tests {
         let res = fitter.solve_model(50);
         assert!(res.terms_count >= 18, "Forventet minst 18 ledd, fikk {}", res.terms_count);
         assert!(res.r_squared > 0.99, "R^2 var {:.4}", res.r_squared);
+    }
+
+    #[test]
+    fn test_online_trig_fitter_k16000() {
+        // Test med k helt opp til 16 000 (svært høyfrekvent sanntidsstrøm)
+        let mut fitter = OnlineTrigFitter::new(16000);
+        assert_eq!(fitter.max_k, 16000);
+        assert_eq!(fitter.dim, 32000);
+        assert!(fitter.gram.is_empty(), "For k > 128 skal ikke stor Gram-matrise allokeres");
+        assert_eq!(fitter.diag.len(), 32000);
+        assert_eq!(fitter.rhs_b.len(), 32000);
+
+        // Generer punkter fra signal med frekvenser opp mot 16 000:
+        // dt < pi / 16000 ~= 0.000196
+        for i in 0..200 {
+            let x = (i as f64) * 0.0001;
+            let y = 3.0 * (3000.0 * x).sin() + 2.0 * (9000.0 * x).cos();
+            fitter.add_point(x, y);
+        }
+
+        let res = fitter.solve_model(4);
+        assert_eq!(res.count, 200);
+        assert!(res.formula.contains("3000") || res.formula.contains("3001"), "Mangler sin(3000x): {}", res.formula);
+        assert!(res.formula.contains("9000") || res.formula.contains("8999") || res.formula.contains("9001"), "Mangler cos(9000x): {}", res.formula);
+        assert!(res.r_squared > 0.98, "R^2 var {:.4}", res.r_squared);
     }
 }

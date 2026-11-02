@@ -587,7 +587,7 @@ impl ExtremaApp {
                             self.csv_plot_bounds_request = Some([full_min_x, y_min - pad, full_max_x, y_max + pad]);
                         }
                         self.csv_file_path = Some(path);
-                        let target_k = (meta.sample_rate / 2).max(8000);
+                        let target_k = (meta.sample_rate / 2).max(16000);
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
                         if self.flac_options.time_as_hz_radians && self.csv_max_n < target_k {
@@ -637,7 +637,7 @@ impl ExtremaApp {
             if path.extension().map(|e| e.to_string_lossy().to_lowercase() == "flac").unwrap_or(false) {
                 match crate::flac_loader::read_flac_data(path, &self.flac_options) {
                     Ok((meta, pts)) => {
-                        let target_k = (meta.sample_rate / 2).max(8000);
+                        let target_k = (meta.sample_rate / 2).max(16000);
                         self.flac_meta = Some(meta);
                         self.csv_data = pts;
                         if self.flac_options.time_as_hz_radians && self.csv_max_n < target_k {
@@ -1191,10 +1191,20 @@ impl ExtremaApp {
                     ui.label(RichText::new("Maks k:").strong().size(12.0));
                     ui.add(
                         egui::DragValue::new(&mut self.csv_max_n)
-                            .range(1..=u32::MAX)
-                            .speed(1.0),
+                            .range(1..=100_000)
+                            .speed(10.0),
                     )
-                    .on_hover_text("Maksimal frekvens k som testes (ingen øvre grense)");
+                    .on_hover_text("Maksimal frekvens k som testes under formelgjenkjenning (støtter inntil 16 000 og høyere)");
+
+                    if ui.small_button("16k").on_hover_text("Sett maks k til 16 000").clicked() {
+                        self.csv_max_n = 16000;
+                    }
+                    if ui.small_button("8k").on_hover_text("Sett maks k til 8000").clicked() {
+                        self.csv_max_n = 8000;
+                    }
+                    if ui.small_button("128").on_hover_text("Sett maks k til 128").clicked() {
+                        self.csv_max_n = 128;
+                    }
 
                     ui.label(RichText::new("Maks ledd/linje:").strong().size(12.0));
                     ui.add(egui::DragValue::new(&mut self.csv_terms_per_line).range(1..=12));
@@ -1865,12 +1875,16 @@ impl ExtremaApp {
 
                     ui.label(RichText::new("Maks k:").color(theme.text_secondary).size(12.0));
                     let k_resp = ui.add(
-                        egui::Slider::new(&mut self.service_max_k, 4..=8000)
+                        egui::Slider::new(&mut self.service_max_k, 4..=16000)
                             .logarithmic(true)
                             .text(""),
                     )
-                    .on_hover_text("Maksimal Fourier-frekvens i online modellen (støtter inntil 8000)");
+                    .on_hover_text("Maksimal Fourier-frekvens i online modellen (støtter inntil 16 000)");
                     if k_resp.changed() {
+                        self.service_controller.reinit_fitter(self.service_max_k);
+                    }
+                    if ui.small_button("16 000").on_hover_text("Sett maks k til 16 000").clicked() {
+                        self.service_max_k = 16000;
                         self.service_controller.reinit_fitter(self.service_max_k);
                     }
 
@@ -2586,6 +2600,18 @@ impl ExtremaApp {
                         }
                         self.poly_log_result = None;
                     }
+                    if ui.small_button("sin(16000x)").clicked() {
+                        self.poly_log_input = "sin(16000x)".to_string();
+                        self.poly_log_degree = 16000;
+                        self.poly_log_term_by_term = true;
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
+                        self.poly_log_result = None;
+                    }
                 });
 
                 ui.separator();
@@ -2635,8 +2661,8 @@ impl ExtremaApp {
                     if !self.poly_log_auto_terms {
                         ui.separator();
                         ui.label(RichText::new("Maks polynomgrad (xᵏ):").strong().color(theme.text_secondary).size(12.0));
-                        ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=10000).speed(10.0))
-                            .on_hover_text("Høyeste positive x-potens opptil 10 000 ledd.");
+                        ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=20000).speed(10.0))
+                            .on_hover_text("Høyeste positive x-potens opptil 20 000 ledd (støtter minst 16 000 ledd).");
 
                         ui.separator();
                         ui.label(RichText::new("Maks inversgrad (1/xᵏ):").strong().color(theme.text_secondary).size(12.0));
