@@ -2574,7 +2574,7 @@ impl ExtremaApp {
                         self.poly_log_term_by_term = true;
                         self.poly_log_result = None;
                     }
-                    if ui.small_button("sin(8000x) (8000 ledd)").clicked() {
+                    if ui.small_button("sin(8000x)").clicked() {
                         self.poly_log_input = "sin(8000x)".to_string();
                         self.poly_log_degree = 8000;
                         self.poly_log_term_by_term = true;
@@ -2636,7 +2636,7 @@ impl ExtremaApp {
                         ui.separator();
                         ui.label(RichText::new("Maks polynomgrad (xᵏ):").strong().color(theme.text_secondary).size(12.0));
                         ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=10000).speed(10.0))
-                            .on_hover_text("Høyeste positive x-potens (støtter minst 8000 ledd, f.eks. opptil 10 000 ledd!).");
+                            .on_hover_text("Høyeste positive x-potens opptil 10 000 ledd.");
 
                         ui.separator();
                         ui.label(RichText::new("Maks inversgrad (1/xᵏ):").strong().color(theme.text_secondary).size(12.0));
