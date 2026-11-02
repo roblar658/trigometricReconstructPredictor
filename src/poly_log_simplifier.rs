@@ -19,12 +19,13 @@ use crate::model::TrigFunction;
 
 #[derive(Clone, Debug)]
 pub struct PolyLogBasisConfig {
-    pub max_degree: usize,         // Høyeste positive x-potens (vilkårlig mange: f.eks. 6, 12, 20...)
+    pub max_degree: usize,         // Høyeste positive x-potens (vilkårlig mange: f.eks. 6, 12, 20, 135...)
     pub max_inv_degree: usize,     // Høyeste inverse x-potens 1/x^k (vilkårlig mange: 1/x, 1/x^2, 1/x^3...)
     pub max_x_ln_degree: usize,    // Høyeste x^n * log(x) potens (vilkårlig mange: x*log(x), x^2*log(x), x^3*log(x)...)
     pub include_ln: bool,          // Inkluder ln(x) (tilsvarer x^0 * ln(x))
     pub num_samples: usize,        // Antall integrasjonspunkter over [a, b]
     pub auto_terms: bool,          // Automatisk tilpasning av optimalt antall ledd og grad
+    pub term_by_term: bool,        // Transformer ledd for ledd (hvert sin/cos ledd for seg, f.eks. sin(130x) krever > 130 ledd)
 }
 
 impl Default for PolyLogBasisConfig {
@@ -36,6 +37,7 @@ impl Default for PolyLogBasisConfig {
             include_ln: true,
             num_samples: 800,
             auto_terms: true,
+            term_by_term: false,
         }
     }
 }
@@ -43,7 +45,7 @@ impl Default for PolyLogBasisConfig {
 #[derive(Clone, Debug)]
 pub struct PolyLogTerm {
     pub name: String,        // f.eks. "x^2", "1/x^2", "x^3*log(x)", "ln(x)", "x", "1"
-    pub latex_name: String,  // f.eks. "x^2", "\frac{1}{x^2}", "x^{3}\ln(x)", "\ln(x)", "x", "1"
+    pub latex_name: String,  // f.eks. "x^2", "\frac{1}{x^2}", "x^{3}\ln(x)", "\\ln(x)", "x", "1"
     pub coeff: f64,          // Nøyaktig koeffisient (f64)
     pub power: Option<i32>,  // Potens for x: positiv for x^p, negativ for 1/x^|p|, 0 for konstant
     pub is_log: bool,        // Er dette et log-ledd?
@@ -97,17 +99,24 @@ pub fn auto_detect_domain(func: &TrigFunction) -> (f64, f64) {
 
     // Fundamental periode T = 2*pi / g
     let t_fund = 2.0 * std::f64::consts::PI / (g as f64);
-    let a = 0.1;
-    let b = if t_fund < 1.5 {
-        let mult = (1.5 / t_fund).ceil();
-        a + mult * t_fund
+    let (a, b) = if g >= 30 {
+        let a = 0.01;
+        let b = a + 2.0 * t_fund; // 2 bølgeperioder for høyfrekvente bølger (f.eks. sin(130x))
+        (a, b)
     } else {
-        a + t_fund
+        let a = 0.1;
+        let b = if t_fund < 1.5 {
+            let mult = (1.5 / t_fund).ceil();
+            a + mult * t_fund
+        } else {
+            a + t_fund
+        };
+        (a, b)
     };
 
     let rounded_a = (a * 100.0).round() / 100.0;
     let rounded_b = (b * 100.0).round() / 100.0;
-    (rounded_a, rounded_b.max(rounded_a + 0.5))
+    (rounded_a, rounded_b.max(rounded_a + 0.05))
 }
 
 /// Løser lineært minste kvadraters problem min ||A * c - y||_2 via kolonne-skalert Householder QR.
@@ -377,6 +386,260 @@ fn fit_single_candidate(
 /// Forenkler et trigonometrisk uttrykk til et polynom- og logaritme-uttrykk over [a, b]
 /// med støtte for vilkårlig mange positive ledd (x^k), inverse ledd (1/x, 1/x^2, 1/x^3...)
 /// og polynom-logaritmeledd (x^n * log(x)).
+/// Transformerer hvert trigonometriske ledd separat (lineært: P(x) = sum P_i(x)).
+/// Dette muliggjør ekstrem nøyaktighet og ubegrenset skalering for høyfrekvente ledd som sin(130x),
+/// som matematisk krever over 130 ledd (f.eks. grad 135 eller høyere) for å konvergere.
+pub fn transform_trig_term_by_term(
+    func: &TrigFunction,
+    a: f64,
+    b: f64,
+    config: &PolyLogBasisConfig,
+) -> Result<PolyLogSimplifierResult, String> {
+    if a >= b {
+        return Err("Startpunkt 'a' må være strengt mindre enn sluttpunkt 'b'.".to_string());
+    }
+
+    let n = config.num_samples.clamp(100, 4000);
+    let step = (b - a) / (n - 1) as f64;
+    let mut x_vals = Vec::with_capacity(n);
+    let mut y_orig = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = a + (i as f64) * step;
+        x_vals.push(x);
+        y_orig.push(func.eval(x));
+    }
+
+    // Vi transformerer hvert ledd lineært: P(x) = sum_i P_i(x)
+    // Map for potenser av x: potens (i32) -> koeffisient (f64)
+    // Positive: p >= 0. Negative: p < 0 (for inverse ledd 1/x^|p|).
+    let mut poly_powers: std::collections::BTreeMap<i32, f64> = std::collections::BTreeMap::new();
+    // For log(x) ledd: log_power (usize) -> koeffisient (f64)
+    let mut log_powers: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
+
+    for t in &func.terms {
+        if t.amp.abs() < 1e-12 {
+            continue;
+        }
+
+        if t.freq == 0 {
+            // Konstant ledd
+            match t.kind {
+                crate::model::TrigKind::Cos => {
+                    *poly_powers.entry(0).or_insert(0.0) += t.amp;
+                }
+                crate::model::TrigKind::Sin => {} // sin(0) = 0
+            }
+            continue;
+        }
+
+        let k = t.freq as f64;
+        let amp = t.amp;
+
+        // Bestem nødvendig grad for dette leddet:
+        // For høye frekvenser som sin(130x) kreves det over 130 ledd (f.eks. grad 135 eller høyere).
+        let deg = if config.auto_terms {
+            if t.freq >= 120 {
+                (t.freq as usize + 5).max(135)
+            } else if t.freq >= 15 {
+                (t.freq as usize + 5).max(25)
+            } else {
+                14.min((t.freq as usize * 4).max(8))
+            }
+        } else {
+            if t.freq >= 120 && config.max_degree < 130 {
+                // Bruker har spesifisert k=130: krever over 130 ledd
+                135.max(config.max_degree)
+            } else {
+                config.max_degree.max(2)
+            }
+        };
+
+        // Hvis leddet har lav frekvens (k < 15) og brukeren har bedt om inverse ledd eller log,
+        // kan vi bruke QR kandidat-tilpasning for dette enkeltleddet.
+        let use_qr_for_term = t.freq < 15 && (config.include_ln || config.max_inv_degree > 0 || config.max_x_ln_degree > 0);
+
+        if use_qr_for_term {
+            let term_func = TrigFunction::new(vec![*t]);
+            let res_term = fit_single_candidate(
+                &term_func,
+                a,
+                b,
+                &x_vals,
+                &x_vals.iter().map(|&x| term_func.eval(x)).collect::<Vec<_>>(),
+                deg.min(14),
+                config.max_inv_degree,
+                config.include_ln,
+                config.max_x_ln_degree,
+            );
+            for term in res_term.terms {
+                if term.is_log {
+                    *log_powers.entry(term.log_power).or_insert(0.0) += term.coeff;
+                } else if let Some(p) = term.power {
+                    *poly_powers.entry(p).or_insert(0.0) += term.coeff;
+                }
+            }
+        } else {
+            // Analytisk Taylor-rekke transformasjon for sinus og cosinus
+            match t.kind {
+                crate::model::TrigKind::Sin => {
+                    // sin(kx) = sum_{m=0}^M (-1)^m / (2m+1)! * (kx)^(2m+1)
+                    let mut p = 1usize;
+                    let mut c = amp * k;
+                    while p <= deg {
+                        *poly_powers.entry(p as i32).or_insert(0.0) += c;
+                        if p + 2 > deg { break; }
+                        c = -c * (k * k) / (((p + 1) * (p + 2)) as f64);
+                        p += 2;
+                    }
+                }
+                crate::model::TrigKind::Cos => {
+                    // cos(kx) = sum_{m=0}^M (-1)^m / (2m)! * (kx)^(2m)
+                    let mut p = 0usize;
+                    let mut c = amp;
+                    while p <= deg {
+                        *poly_powers.entry(p as i32).or_insert(0.0) += c;
+                        if p + 2 > deg { break; }
+                        c = -c * (k * k) / (((p + 1) * (p + 2)) as f64);
+                        p += 2;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut terms: Vec<PolyLogTerm> = Vec::new();
+
+    // 1. Positive potenser i synkende rekkefølge (x^deg, ..., x^1)
+    for (&p, &c) in poly_powers.iter().rev() {
+        if p > 0 && c.abs() > 1e-13 {
+            let name = if p == 1 { "x".to_string() } else { format!("x^{}", p) };
+            let latex = if p == 1 { "x".to_string() } else { format!("x^{{{}}}", p) };
+            terms.push(PolyLogTerm {
+                name,
+                latex_name: latex,
+                coeff: c,
+                power: Some(p),
+                is_log: false,
+                log_power: 0,
+            });
+        }
+    }
+
+    // 2. Log-ledd
+    for (&n_pow, &c) in &log_powers {
+        if c.abs() > 1e-12 {
+            let (name, latex) = if n_pow == 0 {
+                ("log(x)".to_string(), "\\ln(x)".to_string())
+            } else if n_pow == 1 {
+                ("x*log(x)".to_string(), "x\\ln(x)".to_string())
+            } else {
+                (format!("x^{}*log(x)", n_pow), format!("x^{{{}}}\\ln(x)", n_pow))
+            };
+            terms.push(PolyLogTerm {
+                name,
+                latex_name: latex,
+                coeff: c,
+                power: if n_pow == 0 { None } else { Some(n_pow as i32) },
+                is_log: true,
+                log_power: n_pow,
+            });
+        }
+    }
+
+    // 3. Konstantledd 1
+    if let Some(&c) = poly_powers.get(&0) {
+        if c.abs() > 1e-12 {
+            terms.push(PolyLogTerm {
+                name: "1".to_string(),
+                latex_name: "1".to_string(),
+                coeff: c,
+                power: Some(0),
+                is_log: false,
+                log_power: 0,
+            });
+        }
+    }
+
+    // 4. Inverse potenser i rekkefølge 1/x, 1/x^2, ...
+    for (&p, &c) in &poly_powers {
+        if p < 0 && c.abs() > 1e-12 {
+            let k = (-p) as usize;
+            let name = if k == 1 { "1/x".to_string() } else { format!("1/x^{}", k) };
+            let latex = if k == 1 { "\\frac{1}{x}".to_string() } else { format!("\\frac{{1}}{{x^{{{}}}}}", k) };
+            terms.push(PolyLogTerm {
+                name,
+                latex_name: latex,
+                coeff: c,
+                power: Some(p),
+                is_log: false,
+                log_power: 0,
+            });
+        }
+    }
+
+    // Evaluer total modell over x_vals
+    let mut approx_y = Vec::with_capacity(n);
+    let mut error_y = Vec::with_capacity(n);
+    let mut rss = 0.0;
+    let mut max_err = 0.0f64;
+
+    for (&x, &y_true) in x_vals.iter().zip(y_orig.iter()) {
+        let mut y_hat = 0.0;
+        for t in &terms {
+            if t.name == "1" {
+                y_hat += t.coeff;
+            } else if t.is_log {
+                if t.log_power == 0 {
+                    y_hat += t.coeff * x.ln();
+                } else {
+                    y_hat += t.coeff * x.powi(t.log_power as i32) * x.ln();
+                }
+            } else if let Some(p) = t.power {
+                if p > 0 {
+                    y_hat += t.coeff * x.powi(p);
+                } else if p < 0 {
+                    y_hat += t.coeff / x.powi(-p);
+                }
+            }
+        }
+
+        approx_y.push(y_hat);
+        let err = y_true - y_hat;
+        error_y.push(err);
+        rss += err * err;
+        let abs_err = err.abs();
+        if abs_err > max_err {
+            max_err = abs_err;
+        }
+    }
+
+    let mean_y = y_orig.iter().sum::<f64>() / n as f64;
+    let tss = y_orig.iter().map(|&y| (y - mean_y).powi(2)).sum::<f64>().max(1e-12);
+    let r_squared = (1.0 - (rss / tss)).clamp(0.0, 1.0);
+    let rmse = (rss / n as f64).sqrt();
+
+    let simplified_formula = format_model_string(&terms, false);
+    let python_formula = format_python_string(&terms);
+    let latex_formula = format_latex_string(&terms);
+
+    Ok(PolyLogSimplifierResult {
+        original_formula: format!("{}", func),
+        simplified_formula,
+        python_formula,
+        latex_formula,
+        terms,
+        r_squared,
+        rmse,
+        max_error: max_err,
+        a,
+        b,
+        sample_x: x_vals,
+        orig_y: y_orig,
+        approx_y,
+        error_y,
+    })
+}
+
 pub fn simplify_trig_to_poly_log(
     func: &TrigFunction,
     a: f64,
@@ -388,6 +651,12 @@ pub fn simplify_trig_to_poly_log(
     }
     if !config.auto_terms && (config.include_ln || config.max_inv_degree > 0 || config.max_x_ln_degree > 0) && a <= 0.0 {
         return Err("For å inkludere log(x), inverse potenser (1/x, 1/x^2, ...) eller x^n*log(x) må definisjonsmengden være positiv (a > 0).".to_string());
+    }
+
+    // Hvis ledd-for-ledd transformasjon er valgt eller bølgefunksjonen har høye frekvenser (f.eks. k >= 20 som sin(130x)):
+    let has_high_freq = func.terms.iter().any(|t| t.freq >= 20);
+    if config.term_by_term || has_high_freq {
+        return transform_trig_term_by_term(func, a, b, config);
     }
 
     let n = config.num_samples.clamp(100, 4000);
@@ -484,16 +753,17 @@ pub fn simplify_trig_to_poly_log(
 
 pub fn format_coeff(c: f64) -> String {
     let abs_c = c.abs();
-    if abs_c >= 100.0 {
+    if abs_c == 0.0 {
+        return "0".to_string();
+    }
+    if abs_c >= 1e9 || abs_c < 1e-7 {
+        format!("{:.4e}", abs_c)
+    } else if abs_c >= 100.0 {
         format!("{:.3}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
     } else if abs_c >= 1.0 {
         format!("{:.5}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
-    } else if abs_c >= 0.0001 {
-        format!("{:.6}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
-    } else if abs_c >= 1e-7 {
-        format!("{:.8}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
     } else {
-        format!("{:.4e}", abs_c)
+        format!("{:.6}", abs_c).trim_end_matches('0').trim_end_matches('.').to_string()
     }
 }
 
@@ -614,6 +884,7 @@ mod tests {
             include_ln: true,
             num_samples: 300,
             auto_terms: false,
+            term_by_term: false,
         };
 
         let res = simplify_trig_to_poly_log(&func, 0.5, 5.0, &config)
@@ -635,6 +906,7 @@ mod tests {
             include_ln: true,
             num_samples: 200,
             auto_terms: false,
+            term_by_term: false,
         };
 
         let res = simplify_trig_to_poly_log(&func, 1.0, 4.0, &config).unwrap();
@@ -653,6 +925,7 @@ mod tests {
             include_ln: true,
             num_samples: 400,
             auto_terms: false,
+            term_by_term: false,
         };
 
         let res = simplify_trig_to_poly_log(&func, 0.5, 4.0, &config).unwrap();
@@ -672,6 +945,7 @@ mod tests {
             include_ln: true,
             num_samples: 500,
             auto_terms: false,
+            term_by_term: false,
         };
 
         let res = simplify_trig_to_poly_log(&func, 0.5, 5.0, &config).unwrap();
@@ -692,5 +966,67 @@ mod tests {
             res.simplified_formula, res.terms.len(), res.r_squared, res.rmse);
         assert!(res.r_squared >= 0.99999, "R^2 må være over 0.99999, var {}", res.r_squared);
         assert!(!res.terms.is_empty());
+    }
+
+    #[test]
+    fn test_poly_log_sin_130x_over_130_terms() {
+        let func = TrigFunction::parse("sin(130x)").unwrap();
+        let (a, b) = auto_detect_domain(&func);
+        let config = PolyLogBasisConfig {
+            max_degree: 135,
+            max_inv_degree: 0,
+            max_x_ln_degree: 0,
+            include_ln: false,
+            num_samples: 800,
+            auto_terms: true,
+            term_by_term: true,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, a, b, &config).unwrap();
+        println!("sin(130x) modell: {} ledd, R2={:.10}, RMSE={:.6e}", res.terms.len(), res.r_squared, res.rmse);
+        assert!(res.r_squared >= 0.9999999, "R2 var {}", res.r_squared);
+        // Høyeste grad skal være minst 130 (her 135)
+        let max_p = res.terms.iter().filter_map(|t| t.power).max().unwrap_or(0);
+        assert!(max_p >= 130, "Maks grad var {}, forventet >= 130", max_p);
+        assert!(res.simplified_formula.contains("x^135") || res.simplified_formula.contains("x^133"));
+    }
+
+    #[test]
+    fn test_poly_log_sin_130x_plus_cos_130x_136_terms() {
+        let func = TrigFunction::parse("sin(130x) + cos(130x)").unwrap();
+        let (a, b) = auto_detect_domain(&func);
+        let config = PolyLogBasisConfig {
+            max_degree: 135,
+            max_inv_degree: 0,
+            max_x_ln_degree: 0,
+            include_ln: false,
+            num_samples: 800,
+            auto_terms: true,
+            term_by_term: true,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, a, b, &config).unwrap();
+        println!("sin(130x) + cos(130x) modell: {} ledd, R2={:.10}", res.terms.len(), res.r_squared);
+        assert!(res.r_squared >= 0.9999999);
+        assert!(res.terms.len() > 130, "Forventet over 130 ledd, fikk {}", res.terms.len());
+        assert_eq!(res.terms.len(), 136);
+    }
+
+    #[test]
+    fn test_poly_log_mixed_linearity() {
+        let func = TrigFunction::parse("sin(x) + cos(2x) + sin(130x)").unwrap();
+        let config = PolyLogBasisConfig {
+            max_degree: 135,
+            max_inv_degree: 0,
+            max_x_ln_degree: 0,
+            include_ln: false,
+            num_samples: 800,
+            auto_terms: true,
+            term_by_term: true,
+        };
+
+        let res = simplify_trig_to_poly_log(&func, 0.01, 0.11, &config).unwrap();
+        assert!(res.r_squared >= 0.9999999);
+        assert!(res.terms.len() >= 68);
     }
 }

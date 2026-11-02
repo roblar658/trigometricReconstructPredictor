@@ -156,6 +156,7 @@ pub struct ExtremaApp {
     pub poly_log_x_ln_degree: usize,
     pub poly_log_auto_terms: bool,
     pub poly_log_auto_ab: bool,
+    pub poly_log_term_by_term: bool,
     pub poly_log_include_ln: bool,
     pub poly_log_result: Option<crate::poly_log_simplifier::PolyLogSimplifierResult>,
     pub poly_log_error: Option<String>,
@@ -258,6 +259,7 @@ impl Default for ExtremaApp {
             poly_log_x_ln_degree: 2,
             poly_log_auto_terms: true,
             poly_log_auto_ab: true,
+            poly_log_term_by_term: true,
             poly_log_include_ln: true,
             poly_log_result: None,
             poly_log_error: None,
@@ -2543,6 +2545,28 @@ impl ExtremaApp {
                         }
                         self.poly_log_result = None;
                     }
+                    if ui.small_button("sin(130x)").clicked() {
+                        self.poly_log_input = "sin(130x)".to_string();
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
+                        self.poly_log_term_by_term = true;
+                        self.poly_log_result = None;
+                    }
+                    if ui.small_button("sin(x) + sin(130x)").clicked() {
+                        self.poly_log_input = "sin(x) + sin(130x)".to_string();
+                        if self.poly_log_auto_ab {
+                            if let Ok(f) = crate::model::TrigFunction::parse(&self.poly_log_input) {
+                                let (da, db) = crate::poly_log_simplifier::auto_detect_domain(&f);
+                                self.poly_log_a = da; self.poly_log_b = db;
+                            }
+                        }
+                        self.poly_log_term_by_term = true;
+                        self.poly_log_result = None;
+                    }
                 });
 
                 ui.separator();
@@ -2585,11 +2609,15 @@ impl ExtremaApp {
                     ui.checkbox(&mut self.poly_log_auto_terms, RichText::new("Auto antall ledd").strong().color(theme.text_accent))
                         .on_hover_text("Finner automatisk optimalt antall ledd og polynomgrad for best mulig nøyaktighet (R² inntil 0.9999+)");
 
+                    ui.separator();
+                    ui.checkbox(&mut self.poly_log_term_by_term, RichText::new("Transformer ledd for ledd").strong().color(theme.text_accent))
+                        .on_hover_text("Transformerer hvert sinus- og cosinus-ledd separat (lineært P = ∑ P_i). Nødvendig for høye frekvenser som sin(130x) som krever over 130 ledd.");
+
                     if !self.poly_log_auto_terms {
                         ui.separator();
                         ui.label(RichText::new("Maks polynomgrad (xᵏ):").strong().color(theme.text_secondary).size(12.0));
-                        ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=50).speed(0.2))
-                            .on_hover_text("Høyeste positive x-potens (f.eks. 14 gir ledd inntil x¹⁴). Kan settes vilkårlig høyt!");
+                        ui.add(egui::DragValue::new(&mut self.poly_log_degree).range(1..=300).speed(1.0))
+                            .on_hover_text("Høyeste positive x-potens (f.eks. 14 for x¹⁴, eller > 130 for sin(130x)). Støtter vilkårlig mange ledd!");
 
                         ui.separator();
                         ui.label(RichText::new("Maks inversgrad (1/xᵏ):").strong().color(theme.text_secondary).size(12.0));
@@ -2624,6 +2652,7 @@ impl ExtremaApp {
                                         include_ln: self.poly_log_include_ln,
                                         num_samples: 800,
                                         auto_terms: self.poly_log_auto_terms,
+                                        term_by_term: self.poly_log_term_by_term,
                                     };
                                     match crate::poly_log_simplifier::simplify_trig_to_poly_log(&func, self.poly_log_a, self.poly_log_b, &config) {
                                         Ok(res) => {

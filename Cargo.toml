@@ -23,9 +23,10 @@ debug = 0
 strip = true
 
 [profile.release]
-opt-level = 3
+opt-level = 1
+codegen-units = 1
+lto = false
 strip = true
 
 [profile.release.package.gpu_extrema_classifier]
 opt-level = 1
-
